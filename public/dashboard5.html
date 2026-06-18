@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Light and Turbidity Dashboard - Light, turbidity, and pH status for tank control">
+  <title>Light Motion — Tank Monitor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+    :root {
+      --bg-primary:#0a0e1a;
+      --bg-secondary:#111827;
+      --bg-card:rgba(17,24,39,0.6);
+      --border-glass:rgba(255,255,255,0.08);
+      --text-primary:#f0f4f8;
+      --text-secondary:#94a3b8;
+      --text-muted:#64748b;
+      --accent-blue:#3b82f6;
+      --accent-teal:#14b8a6;
+      --accent-amber:#f59e0b;
+      --accent-violet:#8b5cf6;
+      --accent-green:#22c55e;
+      --gradient-hero:linear-gradient(135deg,#0a0e1a 0%,#0f172a 50%,#0c1220 100%);
+      --shadow-card:0 8px 32px rgba(0,0,0,0.4);
+      --radius:16px;
+      --transition:all 0.3s cubic-bezier(0.4,0,0.2,1);
+    }
+    body { font-family:'Inter',-apple-system,sans-serif; background:var(--gradient-hero); color:var(--text-primary); min-height:100vh; overflow-x:hidden; }
+    body::before { content:''; position:fixed; top:0; left:0; right:0; bottom:0; background:radial-gradient(2px 2px at 20% 30%,rgba(59,130,246,0.15),transparent),radial-gradient(2px 2px at 70% 24%,rgba(245,158,11,0.12),transparent),radial-gradient(3px 3px at 52% 65%,rgba(139,92,246,0.08),transparent); animation:drift 22s ease-in-out infinite alternate; pointer-events:none; z-index:0; }
+    @keyframes drift{from{transform:translate(0,0) scale(1);}to{transform:translate(-16px,-18px) scale(1.03);}}
+    .app-container{position:relative;z-index:1;max-width:1400px;margin:0 auto;padding:24px;}
+    .nav-bar{position:relative;z-index:2000;display:flex;align-items:center;justify-content:space-between;padding:16px 24px;background:var(--bg-card);border:1px solid var(--border-glass);border-radius:var(--radius);backdrop-filter:blur(20px);margin-bottom:32px;}
+    .nav-title{display:flex;align-items:center;gap:12px;}
+    .nav-title .icon{width:40px;height:40px;background:linear-gradient(135deg,var(--accent-blue),var(--accent-teal));border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:20px;}
+    .nav-title h1{font-size:1.25rem;font-weight:700;letter-spacing:-0.02em;} .nav-subtitle{font-size:0.75rem;color:var(--text-muted);font-weight:400;}
+    .nav-brand-link {
+      text-decoration: none;
+      color: inherit;
+      transition: var(--transition);
+    }
+    .nav-brand-link:hover {
+      opacity: 0.9;
+    }
+
+    .nav-links-container {
+      position: relative;
+    }
+
+    .nav-links {
+      display: none;
+      gap: 14px;
+      align-items: center;
+    }
+
+    .nav-links a {
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 0.95rem;
+      padding: 6px 8px;
+      border-radius: 8px;
+      transition: var(--transition);
+      white-space: nowrap;
+    }
+
+    .nav-links a:hover {
+      color: var(--text-primary);
+      background: rgba(255,255,255,0.02);
+    }
+
+    .nav-links a.active {
+      color: var(--accent-teal);
+    }
+
+    .dropdown-trigger {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-glass);
+      color: var(--text-primary);
+      font-size: 1.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: var(--transition);
+    }
+
+    .dropdown-trigger:hover, .dropdown-trigger.active {
+      background: rgba(255, 255, 255, 0.1);
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .dropdown-menu {
+      position: absolute;
+      top: 50px;
+      right: 0;
+      width: 180px;
+      background: rgba(17, 24, 39, 0.95);
+      backdrop-filter: blur(20px);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius);
+      padding: 16px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+      display: none;
+      flex-direction: column;
+      gap: 12px;
+      z-index: 1000;
+      animation: menuFadeIn 0.2s ease-out;
+    }
+
+    .dropdown-menu.show {
+      display: flex;
+    }
+
+    @keyframes menuFadeIn {
+      from { opacity: 0; transform: translateY(-10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .dropdown-header {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-weight: 700;
+      border-bottom: 1px solid var(--border-glass);
+      padding-bottom: 8px;
+    }
+
+    .dropdown-grid-nav {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+    }
+
+    .dropdown-item {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      aspect-ratio: 1;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border-glass);
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 1rem;
+      transition: var(--transition);
+    }
+
+    .dropdown-item:hover {
+      background: rgba(20, 184, 166, 0.1);
+      color: var(--accent-teal);
+      border-color: rgba(20, 184, 166, 0.3);
+      transform: translateY(-2px);
+    }
+
+    .dropdown-item.active {
+      background: rgba(20, 184, 166, 0.15);
+      color: var(--accent-teal);
+      border-color: rgba(20, 184, 166, 0.4);
+    }
+
+    .connection-badge {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      background: rgba(239, 68, 68, 0.1);
+      color: var(--accent-red);
+      border: 1px solid rgba(239, 68, 68, 0.2);
+      transition: var(--transition);
+      white-space: nowrap;
+    }
+
+    .connection-badge.connected {
+      background: rgba(34, 197, 94, 0.1);
+      color: var(--accent-green);
+      border-color: rgba(34, 197, 94, 0.2);
+    }
+
+    .connection-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent-red);
+      animation: pulse-dot 2s ease-in-out infinite;
+    }
+
+    .connection-badge.connected .connection-dot {
+      background: var(--accent-green);
+    }
+
+    @keyframes pulse-dot {
+      0%,100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.8); }
+    }
+    .dashboard-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:24px;} @media(max-width:900px){.dashboard-grid{grid-template-columns:1fr;} .nav-bar{flex-direction:column;gap:12px;}}
+    .io-card{background:var(--bg-card);border:1px solid var(--border-glass);border-radius:var(--radius);backdrop-filter:blur(20px);padding:0;overflow:hidden;box-shadow:var(--shadow-card);transition:var(--transition);animation:cardFadeIn 0.6s ease-out both;} .io-card:nth-child(1){animation-delay:0.1s;} .io-card:nth-child(2){animation-delay:0.2s;} .io-card:nth-child(3){animation-delay:0.3s;} @keyframes cardFadeIn{from{opacity:0;transform:translateY(20px);}to{opacity:1;transform:translateY(0);}} .io-card:hover{border-color:rgba(255,255,255,0.12);transform:translateY(-2px);box-shadow:var(--shadow-card),0 12px 40px rgba(0,0,0,0.2);} .card-header{padding:20px 24px;border-bottom:1px solid var(--border-glass);position:relative;} .card-header::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;border-radius:var(--radius) var(--radius) 0 0;}
+    .io-card.light .card-header::before{background:linear-gradient(90deg,var(--accent-teal),var(--accent-cyan));} .io-card.turbidity .card-header::before{background:linear-gradient(90deg,var(--accent-amber),#f97316);} .io-card.tof .card-header::before{background:linear-gradient(90deg,var(--accent-violet),#a78bfa);} 
+    .card-header-top{display:flex;align-items:center;justify-content:space-between;} .sensor-label{display:flex;align-items:center;gap:10px;} .sensor-icon{width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;} .sensor-label h2{font-size:0.95rem;font-weight:600;} .sensor-label .subtitle{font-size:0.7rem;color:var(--text-muted);margin-top:1px;} .mode-badge{font-size:0.65rem;font-weight:700;letter-spacing:0.05em;padding:4px 10px;border-radius:6px;text-transform:uppercase;} .mode-badge.auto{background:rgba(34,197,94,0.12);color:var(--accent-green);} .mode-badge.manual{background:rgba(245,158,11,0.12);color:var(--accent-amber);} .sensor-body{padding:24px;} .value-display{text-align:center;margin-bottom:20px;} .value-number{font-size:3rem;font-weight:800;letter-spacing:-0.03em;line-height:1;transition:var(--transition);} .io-card.light .value-number{color:var(--accent-teal);} .io-card.turbidity .value-number{color:var(--accent-amber);} .io-card.tof .value-number{color:var(--accent-violet);} .value-unit{font-size:0.85rem;color:var(--text-muted);font-weight:500;margin-top:4px;} .status-bar{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:rgba(255,255,255,0.03);border-radius:12px;margin-bottom:16px;} .status-indicator{display:flex;align-items:center;gap:8px;font-size:0.8rem;font-weight:500;} .status-dot{width:10px;height:10px;border-radius:50%;transition:var(--transition);} .status-dot.on{background:var(--accent-green);box-shadow:0 0 8px rgba(34,197,94,0.5);} .status-dot.off{background:var(--text-muted);} .actuator-name{font-size:0.75rem;color:var(--text-muted);} .gauge-container{margin-bottom:16px;} .gauge-track{height:8px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:hidden;} .gauge-fill{height:100%;border-radius:4px;transition:width 0.6s cubic-bezier(0.4,0,0.2,1);min-width:2%;} .io-card.light .gauge-fill{background:linear-gradient(90deg,var(--accent-teal),var(--accent-cyan));} .io-card.turbidity .gauge-fill{background:linear-gradient(90deg,var(--accent-amber),#f97316);} .io-card.tof .gauge-fill{background:linear-gradient(90deg,var(--accent-violet),#a78bfa);} .gauge-labels{display:flex;justify-content:space-between;margin-top:6px;font-size:0.65rem;color:var(--text-muted);} .card-controls{padding:16px 24px 20px;border-top:1px solid var(--border-glass);} .control-group{display:flex;gap:8px;} .ctrl-btn{flex:1;padding:10px 8px;border:1px solid var(--border-glass);background:rgba(255,255,255,0.04);color:var(--text-secondary);border-radius:10px;font-family:'Inter',sans-serif;font-size:0.75rem;font-weight:600;cursor:pointer;transition:var(--transition);text-transform:uppercase;letter-spacing:0.03em;} .ctrl-btn:hover{background:rgba(255,255,255,0.08);color:var(--text-primary);transform:translateY(-1px);} .ctrl-btn:active{transform:translateY(0);} .ctrl-btn.active-on{background:rgba(34,197,94,0.15);border-color:rgba(34,197,94,0.3);color:var(--accent-green);} .ctrl-btn.active-off{background:rgba(239,68,68,0.15);border-color:rgba(239,68,68,0.3);color:var(--accent-red);} .ctrl-btn.active-auto{background:rgba(59,130,246,0.15);border-color:rgba(59,130,246,0.3);color:var(--accent-blue);} .ctrl-btn.active-cw{background:rgba(34,197,94,0.15);border-color:rgba(34,197,94,0.3);color:var(--accent-green);} .ctrl-btn.active-ccw{background:rgba(245,158,11,0.15);border-color:rgba(245,158,11,0.3);color:var(--accent-amber);} .ctrl-btn.active-stop{background:rgba(239,68,68,0.15);border-color:rgba(239,68,68,0.3);color:var(--accent-red);} .tof-ring{position:relative;width:90px;height:90px;margin:0 auto 12px;} .tof-ring svg{width:90px;height:90px;transform:rotate(-90deg);} .tof-ring-bg{fill:none;stroke:rgba(139,92,246,0.15);stroke-width:6;} .tof-ring-fill{fill:none;stroke:url(#tofGradient);stroke-width:6;stroke-linecap:round;stroke-dasharray:251;stroke-dashoffset:251;transition:stroke-dashoffset 0.8s cubic-bezier(0.4,0,0.2,1);} .tof-ring-label{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:0.6rem;color:var(--text-muted);text-align:center;} .stepper-direction{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:4px;font-size:0.75rem;color:var(--text-muted);} .direction-arrow{font-size:1.2rem;transition:var(--transition);} .direction-arrow.active-cw{color:var(--accent-green);animation:spin-cw 2s linear infinite;} .direction-arrow.active-ccw{color:var(--accent-amber);animation:spin-ccw 2s linear infinite;} @keyframes spin-cw{from{transform:rotate(0deg);}to{transform:rotate(360deg);}} @keyframes spin-ccw{from{transform:rotate(0deg);}to{transform:rotate(-360deg);}} .value-update{animation:valueFlash 0.4s ease-out;} @keyframes valueFlash{0%{opacity:0.6;transform:scale(0.97);}50%{opacity:1;transform:scale(1.02);}100%{opacity:1;transform:scale(1);} } .dashboard-footer{text-align:center;padding:24px;color:var(--text-muted);font-size:0.7rem;}
+  </style>
+</head>
+<body>
+  <div class="app-container">
+    <nav class="nav-bar">
+      <div class="nav-title">
+        <div class="icon">🐠</div>
+        <div>
+          <h1>Aquarium Health</h1>
+          <span class="nav-subtitle">Light & Motion</span>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:flex-end;">
+        <div class="nav-links">
+          <a href="/dashboard1">Aquarium</a>
+          <a href="/dashboard2">Environment</a>
+          <a href="/dashboard3">Sensor Fusion</a>
+          <a href="/dashboard4">Chemistry</a>
+          <a href="/dashboard5">Light Motion</a>
+          <a href="/dashboard_camera">Camera</a>
+          <a href="/dashboard_all">Overview</a>
+        </div>
+        <div class="nav-links-container">
+          <button class="dropdown-trigger" id="dropdownTrigger" aria-label="Toggle Dashboards">⋮</button>
+          <div class="dropdown-menu" id="dropdownMenu">
+            <div class="dropdown-header">Dashboards</div>
+            <div class="dropdown-grid-nav">
+              <a href="/dashboard1" class="dropdown-item">1</a>
+              <a href="/dashboard2" class="dropdown-item">2</a>
+              <a href="/dashboard3" class="dropdown-item">3</a>
+              <a href="/dashboard4" class="dropdown-item">4</a>
+              <a href="/dashboard5" class="dropdown-item">5</a>
+              <a href="/dashboard_camera" class="dropdown-item">6</a>
+            </div>
+          </div>
+        </div>
+        <div class="connection-badge" id="connectionBadge"><div class="connection-dot"></div><span id="connectionText">Disconnected</span></div>
+      </div>
+    </nav>
+    <script>
+      (function(){
+        const path = location.pathname.replace(/\/$/, '') || '/dashboard1';
+        document.querySelectorAll('.nav-links a').forEach(a => {
+          if (a.getAttribute('href') === path) a.classList.add('active');
+        });
+      })();
+    
+      (function(){
+        const path = location.pathname.replace(/\/$/, '') || '/dashboard1';
+        document.querySelectorAll('.dropdown-item').forEach(a => {
+          if (a.getAttribute('href') === path) a.classList.add('active');
+        });
+
+        const trigger = document.getElementById('dropdownTrigger');
+        const menu = document.getElementById('dropdownMenu');
+        if (trigger && menu) {
+          const originalParent = menu.parentElement;
+
+          function positionMenu() {
+            const rect = trigger.getBoundingClientRect();
+            menu.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+            menu.style.left = (rect.right + window.scrollX - menu.offsetWidth) + 'px';
+          }
+
+          function openMenu() {
+            if (menu.parentElement !== document.body) {
+              document.body.appendChild(menu);
+              menu.style.position = 'absolute';
+              menu.style.zIndex = 99999;
+            }
+            positionMenu();
+            menu.classList.add('show');
+            trigger.classList.add('active');
+          }
+
+          function closeMenu() {
+            menu.classList.remove('show');
+            trigger.classList.remove('active');
+            if (menu.parentElement === document.body && originalParent) {
+              originalParent.appendChild(menu);
+              menu.style.position = '';
+              menu.style.top = '';
+              menu.style.left = '';
+              menu.style.zIndex = '';
+            }
+          }
+
+          trigger.addEventListener('click', function(e) {
+            e.stopPropagation();
+            if (menu.classList.contains('show')) closeMenu(); else openMenu();
+          });
+
+          document.addEventListener('click', function(e) { if (!menu.contains(e.target) && e.target !== trigger) closeMenu(); });
+          window.addEventListener('resize', function() { if (menu.classList.contains('show')) positionMenu(); });
+          window.addEventListener('scroll', function() { if (menu.classList.contains('show')) positionMenu(); }, true);
+        }
+      })();
+    </script>
+    <div class="dashboard-grid">
+      <div class="io-card light" id="lightCard">
+        <div class="card-header">
+          <div class="card-header-top">
+            <div class="sensor-label"><div class="sensor-icon">☀️</div><div><h2>Light Level</h2><div class="subtitle">BH1750 · I²C Address 0x23</div></div></div>
+            <div class="mode-badge auto" id="lampModeBadge">AUTO</div>
+          </div>
+        </div>
+        <div class="sensor-body">
+          <div class="value-display"><div class="value-number" id="lightValue">—</div><div class="value-unit">Lux (lx)</div></div>
+          <div class="gauge-container"><div class="gauge-track"><div class="gauge-fill" id="lightGauge" style="width:2%"></div></div><div class="gauge-labels"><span>0 (Dark)</span><span>Threshold: 2.0 lx</span><span>1000+ lx</span></div></div>
+          <div class="status-bar"><div class="status-indicator"><div class="status-dot off" id="lampDot"></div><span id="lampStatus">Waiting...</span></div><span class="actuator-name">Lamp Relay</span></div>
+        </div>
+        <div class="card-controls"><div class="control-group"><button class="ctrl-btn" id="lampOn" onclick="sendCmd('tank/lamp/cmd','ON')">ON</button><button class="ctrl-btn" id="lampOff" onclick="sendCmd('tank/lamp/cmd','OFF')">OFF</button><button class="ctrl-btn active-auto" id="lampAuto" onclick="sendCmd('tank/lamp/cmd','AUTO')">AUTO</button></div></div>
+      </div>
+      <div class="io-card turbidity" id="turbidityCard">
+        <div class="card-header">
+          <div class="card-header-top">
+            <div class="sensor-label"><div class="sensor-icon">🌊</div><div><h2>Turbidity</h2><div class="subtitle">Analog Sensor · ADC 0–4095</div></div></div>
+            <div class="mode-badge auto" id="filterModeBadge">AUTO</div>
+          </div>
+        </div>
+        <div class="sensor-body">
+          <div class="value-display">
+            <div class="turbidity-visual"><div class="turbidity-inner" id="turbidityVisual"></div></div>
+            <div class="value-number" id="turbidityValue">—</div>
+            <div class="value-unit">ADC Raw Value</div>
+          </div>
+          <div class="gauge-container"><div class="gauge-track"><div class="gauge-fill" id="turbidityGauge" style="width:2%"></div></div><div class="gauge-labels"><span>0 (Cloudy)</span><span>Threshold: 1600</span><span>4095 (Clear)</span></div></div>
+          <div class="status-bar"><div class="status-indicator"><div class="status-dot off" id="filterDot"></div><span id="filterStatus">Waiting...</span></div><span class="actuator-name">Filter Relay</span></div>
+        </div>
+        <div class="card-controls"><div class="control-group"><button class="ctrl-btn" id="filterOn" onclick="sendCmd('tank/filter/cmd','ON')">ON</button><button class="ctrl-btn" id="filterOff" onclick="sendCmd('tank/filter/cmd','OFF')">OFF</button><button class="ctrl-btn active-auto" id="filterAuto" onclick="sendCmd('tank/filter/cmd','AUTO')">AUTO</button></div></div>
+      </div>
+      <div class="io-card ph" id="phCard">
+        <div class="card-header">
+          <div class="card-header-top">
+            <div class="sensor-label"><div class="sensor-icon">⚗️</div><div><h2>pH Level</h2><div class="subtitle">Analog probe · live water chemistry</div></div></div>
+            <div class="mode-badge auto" id="phModeBadge">LIVE</div>
+          </div>
+        </div>
+        <div class="sensor-body">
+          <div class="value-display"><div class="value-number" id="phValue">—</div><div class="value-unit">pH Scale 0–14</div></div>
+          <div class="gauge-container"><div class="gauge-track"><div class="gauge-fill" id="phGauge" style="width:2%"></div></div><div class="gauge-labels"><span>0 Acidic</span><span>7 Neutral</span><span>14 Alkaline</span></div></div>
+          <div class="status-bar"><div class="status-indicator"><div class="status-dot off" id="phStatusDot"></div><span id="phStatusText">Waiting for data...</span></div><span class="actuator-name">pH Probe</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="dashboard-footer">Tank Monitor System · Dashboard 5: Light Motion · Light + Turbidity + pH</div>
+  </div>
+  <script>
+    let ws = null;
+    let reconnectTimer = null;
+    function connectWebSocket() {
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${location.host}/ws`;
+      ws = new WebSocket(wsUrl);
+      ws.onopen = () => { updateConnectionBadge(true); if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; } };
+      ws.onmessage = (event) => { try { const data = JSON.parse(event.data); handleMQTTMessage(data.topic, data.value); } catch (e) { console.error('[WS] Parse error:', e); } };
+      ws.onclose = () => { updateConnectionBadge(false); reconnectTimer = setTimeout(connectWebSocket, 3000); };
+      ws.onerror = (err) => { console.error('[WS] Error:', err); ws.close(); };
+    }
+    function updateConnectionBadge(connected) {
+      const badge = document.getElementById('connectionBadge');
+      const text = document.getElementById('connectionText');
+      if (connected) { badge.classList.add('connected'); text.textContent = 'Connected'; } else { badge.classList.remove('connected'); text.textContent = 'Disconnected'; }
+    }
+    function handleMQTTMessage(topic, value) {
+      switch (topic) {
+        case 'tank/light': updateLight(value); break;
+        case 'tank/turbidity': updateTurbidity(value); break;
+        case 'tank/ph': updatePH(value); break;
+        case 'tank/lamp': updateActuator('lamp', value); break;
+        case 'tank/filter': updateActuator('filter', value); break;
+      }
+    }
+    function updateLight(value) {
+      const numeric = parseFloat(value);
+      const el = document.getElementById('lightValue');
+      el.textContent = isNaN(numeric) ? '—' : numeric.toFixed(1);
+      const pct = isNaN(numeric) ? 0 : Math.min((numeric / 1000) * 100, 100);
+      document.getElementById('lightGauge').style.width = Math.max(pct, 2) + '%';
+      updateValueFlash(el);
+    }
+    function updateTurbidity(value) {
+      const adc = parseInt(value, 10);
+      const el = document.getElementById('turbidityValue');
+      el.textContent = isNaN(adc) ? '—' : adc;
+      const pct = isNaN(adc) ? 0 : Math.min((adc / 4095) * 100, 100);
+      document.getElementById('turbidityGauge').style.width = pct + '%';
+      const visual = document.getElementById('turbidityVisual');
+      if (visual) {
+        visual.className = 'turbidity-inner ' + (adc > 1600 ? 'clear' : 'cloudy');
+      }
+      updateValueFlash(el);
+    }
+    function updatePH(value) {
+      const numeric = parseFloat(value);
+      const el = document.getElementById('phValue');
+      el.textContent = isNaN(numeric) ? '—' : numeric.toFixed(2);
+      const pct = isNaN(numeric) ? 0 : Math.min(Math.max((numeric / 14) * 100, 0), 100);
+      document.getElementById('phGauge').style.width = Math.max(pct, 2) + '%';
+      const status = document.getElementById('phStatusText');
+      if (status) {
+        status.textContent = isNaN(numeric) ? 'Waiting for data...' : (numeric < 6.5 || numeric > 7.5 ? 'Imbalanced' : 'Balanced');
+      }
+      updateValueFlash(el);
+    }
+    function updateActuator(name, value) {
+      const dot = document.getElementById(name + 'Dot');
+      const status = document.getElementById(name + 'Status');
+      const modeBadge = document.getElementById(name + 'ModeBadge');
+      if (dot) dot.className = 'status-dot ' + ((value.startsWith('ON') || value.startsWith('CW')) ? 'on' : 'off');
+      if (status) status.textContent = value;
+      if (modeBadge) { const isAuto = value.includes('AUTO'); modeBadge.textContent = isAuto ? 'AUTO' : 'MANUAL'; modeBadge.className = 'mode-badge ' + (isAuto ? 'auto' : 'manual'); }
+      updateControlButtons(name, value);
+      if (name === 'filter') { const filterEl = document.getElementById('filterValue'); if (filterEl) filterEl.textContent = value; document.getElementById('filterGauge').style.width = value.startsWith('ON') ? '100%' : '2%'; }
+      if (name === 'lamp') { const lampEl = document.getElementById('lampStatus'); if (lampEl) lampEl.textContent = value; }
+      if (name === 'stepper') { const stepperEl = document.getElementById('stepperValue'); if (stepperEl) stepperEl.textContent = value; const direction = document.getElementById('directionArrow'); const directionText = document.getElementById('stepperDirectionText'); if (direction) { direction.classList.remove('active-cw','active-ccw'); } if (value === 'CW') { if (direction) direction.classList.add('active-cw'); if (directionText) directionText.textContent = 'Clockwise'; } else if (value === 'CCW') { if (direction) direction.classList.add('active-ccw'); if (directionText) directionText.textContent = 'Counter'; } else { if (directionText) directionText.textContent = 'Idle'; } }
+      if (name === 'stepper') { document.getElementById('stepperGauge').style.width = value === 'STOP' ? '2%' : '100%'; }
+    }
+    function updateControlButtons(name,value) {
+      const onBtn = document.getElementById(name + 'On'); const offBtn = document.getElementById(name + 'Off'); const autoBtn = document.getElementById(name + 'Auto'); [onBtn,offBtn,autoBtn].forEach(btn=>{ if(btn) btn.className='ctrl-btn'; }); if(value.includes('AUTO')){ if(autoBtn) autoBtn.classList.add('active-auto'); } else if(value.startsWith('ON')){ if(onBtn) onBtn.classList.add('active-on'); } else if(value.startsWith('OFF')){ if(offBtn) offBtn.classList.add('active-off'); }
+    }
+    function updateValueFlash(el){ if(!el) return; el.classList.remove('value-update'); void el.offsetWidth; el.classList.add('value-update'); }
+    function sendCmd(topic,message){ if(ws && ws.readyState===WebSocket.OPEN){ ws.send(JSON.stringify({ type:'command', topic, message })); } else { fetch('/api/command',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ topic, message }) }).catch(err=>console.error('[API] Error:', err)); } }
+    connectWebSocket();
+  </script>
+</body>
+</html>
