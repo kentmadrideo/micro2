@@ -109,7 +109,7 @@ unsigned long lastReconnectAttempt = 0;
 // - VL53L0X on secondary I2C bus (SDA=18, SCL=19)
 // ==========================================
 BH1750 lightMeter;
-TwoWire Wire1 = TwoWire(1);
+// Note: Wire1 is pre-defined globally by the ESP32 Wire library
 Adafruit_VL53L0X lox = Adafruit_VL53L0X();
 // Half-step lookup table for 28BYJ-48 stepper
 const bool stepLookup[8][4] = {
