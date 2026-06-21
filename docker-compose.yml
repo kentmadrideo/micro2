@@ -1,0 +1,33 @@
+version: "3.8"
+services:
+  app:
+    build: .
+    ports:
+      - "${HTTP_PORT:-3000}:3000"
+    environment:
+      - MONGODB_URI=mongodb://mongo:27017
+      - MONGODB_DB=micro
+      - MONGODB_COLLECTION=measurements
+      - MQTT_BROKER=mqtt://mosquitto:1883
+      - HTTP_PORT=3000
+    depends_on:
+      - mongo
+      - mosquitto
+
+  mongo:
+    image: mongo:6
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+
+volumes:
+  mongo_data:

@@ -10,13 +10,16 @@ const http = require('http');
 const mqtt = require('mqtt');
 const WebSocket = require('ws');
 const path = require('path');
+// Load .env (if present)
+require('dotenv').config();
+const dbClient = require('./lib/mongodb');
 
 // ==========================================
-// CONFIGURATION
+// CONFIGURATION (env-driven for Docker/PI)
 // ==========================================
-const HTTP_PORT = 3000;
-const MQTT_BROKER = 'mqtt://192.168.1.10:1883';
-const MQTT_CLIENT_ID = 'NodeBackend_' + Math.random().toString(16).slice(2, 8);
+const HTTP_PORT = parseInt(process.env.HTTP_PORT, 10) || 3000;
+const MQTT_BROKER = process.env.MQTT_BROKER || 'mqtt://mosquitto:1883';
+const MQTT_CLIENT_ID = process.env.MQTT_CLIENT_ID || ('NodeBackend_' + Math.random().toString(16).slice(2, 8));
 
 // All MQTT topics to monitor
 const SENSOR_TOPICS = [
@@ -104,6 +107,28 @@ app.post('/api/command', (req, res) => {
   }
 });
 
+// API: query stored trend points
+app.get('/api/trends', async (req, res) => {
+  try {
+    const { topic, from, to, limit } = req.query;
+    const coll = dbClient.getCollection();
+    const q = {};
+    if (topic) q.topic = topic;
+    if (from || to) {
+      q.timestamp = {};
+      if (from) q.timestamp.$gte = new Date(from);
+      if (to) q.timestamp.$lte = new Date(to);
+    }
+    const cursor = coll.find(q).sort({ timestamp: 1 });
+    if (limit) cursor.limit(parseInt(limit, 10));
+    const rows = await cursor.toArray();
+    res.json(rows);
+  } catch (e) {
+    console.error('[API] /api/trends error:', e.message);
+    res.status(500).json({ error: 'Failed to query trends' });
+  }
+});
+
 // ==========================================
 // MQTT CLIENT
 // ==========================================
@@ -148,13 +173,21 @@ function initMQTT() {
 
   mqttClient.on('message', (topic, payload) => {
     const value = payload.toString();
+    // Debug log incoming MQTT messages for troubleshooting dashboard updates
+    console.log(`[MQTT RECV] ${topic} -> ${value}`);
     latestState[topic] = value;
 
     // Broadcast to all connected WebSocket clients
     const msg = JSON.stringify({ topic, value, timestamp: Date.now() });
+    // Debug: show outgoing WS broadcast details
+    console.log(`[WS SEND] clients=${wss.clients.size} -> ${msg}`);
     wss.clients.forEach(client => {
       if (client.readyState === WebSocket.OPEN) {
-        client.send(msg);
+        try {
+          client.send(msg);
+        } catch (e) {
+          console.error('[WS] send error:', e && e.message ? e.message : e);
+        }
       }
     });
   });
@@ -173,6 +206,46 @@ const latestState = {};
 // Note: MQTT event handlers are attached inside `initMQTT()` when
 // the client is created. Avoid calling `mqttClient.on(...)` here
 // because `mqttClient` may be null during module initialization.
+
+// ==========================================
+// PERIODIC DB SNAPSHOT (every 30 seconds)
+// ==========================================
+// Instead of saving every MQTT message, we save a single snapshot
+// of all current sensor values every 30 seconds.
+const DB_SNAPSHOT_INTERVAL = 30000; // 30 seconds
+
+setInterval(() => {
+  // Only save if we have sensor data
+  const topics = Object.keys(latestState);
+  if (topics.length === 0) return;
+
+  try {
+    const coll = dbClient.getCollection();
+    const now = new Date();
+
+    // Build one document per topic with its current value
+    const docs = topics.map(topic => {
+      const raw = latestState[topic];
+      const numeric = Number(parseFloat(raw));
+      return {
+        topic,
+        raw,
+        value: Number.isFinite(numeric) ? numeric : null,
+        timestamp: now,
+        source: 'snapshot'
+      };
+    });
+
+    coll.insertMany(docs).then(result => {
+      console.log(`[DB] Snapshot saved: ${result.insertedCount} topics at ${now.toISOString()}`);
+    }).catch(err => {
+      console.error('[DB] Snapshot insert error:', err && err.message ? err.message : err);
+    });
+  } catch (e) {
+    // DB not ready — skip this cycle
+    console.error('[DB] Snapshot skipped:', e && e.message ? e.message : e);
+  }
+}, DB_SNAPSHOT_INTERVAL);
 
 // ==========================================
 // WEBSOCKET SERVER
@@ -231,4 +304,20 @@ server.listen(HTTP_PORT, () => {
 });
 
 // Start MQTT after HTTP server is listening so dashboards remain available
-initMQTT();
+// Connect to MongoDB first (if configured), then start MQTT. If DB fails
+// to connect we'll still start MQTT but inserts will be skipped.
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017';
+const MONGODB_DB = process.env.MONGODB_DB || 'micro';
+const MONGODB_COLLECTION = process.env.MONGODB_COLLECTION || 'measurements';
+
+dbClient.connect(MONGODB_URI, MONGODB_DB, MONGODB_COLLECTION)
+  .then(() => {
+    console.log('[DB] Connected to MongoDB');
+  })
+  .catch((err) => {
+    console.error('[DB] Connection failed:', err && err.message ? err.message : err);
+  })
+  .finally(() => {
+    // Initialize MQTT regardless of DB outcome so dashboards remain functional
+    initMQTT();
+  });

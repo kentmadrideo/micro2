@@ -9,7 +9,7 @@
 // ==========================================
 const char* ssid = "PLDTHOMEFIBR59cf0";
 const char* password = "Kookie-91197";
-const char* mqtt_server = "192.168.1.10";
+const char* mqtt_server = "192.168.1.16";
 WiFiClient espClient;
 PubSubClient client(espClient);
 // ==========================================
@@ -48,6 +48,7 @@ bool highPhAlertSent = false;
 void sendGSMSMS(const String &text);
 void sendLowPhAlert(float phValue);
 void sendHighPhAlert(float phValue);
+void publishIfChanged(const char* topic, const String &value, String &lastState);
 // Scheduling / time-based stepper run
 const long TZ_OFFSET_SEC = 8 * 3600; // local timezone offset in seconds (adjust if needed)
 const int SCHEDULE_WINDOW_MIN = 5;   // +/- minutes allowance
@@ -120,53 +121,7 @@ const bool stepLookup[8][4] = {
   {false, false, false, true },
   {true,  false, false, true }
 };
-// ==========================================
-// MQTT TOPIC MAP
-// ==========================================
-// SENSOR DATA (Published by ESP32):
-//   tank/waterlevel    -> "FULL" or "LOW"
-//   tank/turbidity     -> Raw ADC integer (0-4095)
-//   tank/light         -> Lux float value
-//   tank/tof           -> Distance in mm (-1 = out of range)
-//
-// ACTUATOR STATUS (Published by ESP32):
-//   tank/pump          -> "ON (Auto)" / "OFF (Auto)" / "ON (Manual)" / "OFF (Manual)"
-//   tank/filter        -> Same pattern as pump
-//   tank/lamp          -> Same pattern as pump
-//   tank/stepper       -> "CW (Auto)" / "CCW (Auto)" / "STOPPED (Auto)" / manual variants
-//
-// COMMAND CHANNELS (Subscribed by ESP32):
-//   tank/pump/cmd      -> "ON" / "OFF" / "AUTO"
-//   tank/filter/cmd    -> "ON" / "OFF" / "AUTO"
-//   tank/lamp/cmd      -> "ON" / "OFF" / "AUTO"
-//   tank/stepper/cmd   -> "CW" / "CCW" / "STOP" / "AUTO"
-//
-// ==========================================
-// DASHBOARD I/O COMBINATIONS
-// ==========================================
-// Dashboard 1 - "Aquarium Health"
-//   [Water Level + Pump]  [Turbidity + Filter]  [BH1750 + Lamp]
-//
-// Dashboard 2 - "Environment Control"
-//   [Water Level + Pump]  [BH1750 + Lamp]  [ToF + Stepper]
-//
-// Dashboard 3 - "Sensor Fusion"
-//   [Turbidity + Filter]  [ToF + Stepper]  [BH1750 + Lamp]
-// ==========================================
-// ==========================================
-// HELPER: Publish only on state change
-// ==========================================
-void publishIfChanged(const char* topic, String newState, String &lastState) {
-  if (newState != lastState) {
-    lastState = newState;
-    if (client.connected()) {
-      client.publish(topic, newState.c_str());
-    }
-  }
-}
-// ==========================================
-// pH SENSOR HELPER
-// ==========================================
+
 float readPH() {
   int buffer_arr[10];
   for (int i = 0; i < 10; i++) {
@@ -664,6 +619,24 @@ bool waitForGSMResponse(const String &target, unsigned long timeoutMs) {
   }
   Serial.print("[GSM RX TIMEOUT] last buffer: "); Serial.println(buf);
   return false;
+}
+
+void publishIfChanged(const char* topic, const String &value, String &lastState) {
+  if (value != lastState) {
+    if (client.connected()) {
+      client.publish(topic, value.c_str());
+      Serial.print("[MQTT SEND] ");
+      Serial.print(topic);
+      Serial.print(" → ");
+      Serial.println(value);
+    } else {
+      Serial.print("[MQTT] Not connected, skipping publish: ");
+      Serial.print(topic);
+      Serial.print(" → ");
+      Serial.println(value);
+    }
+    lastState = value;
+  }
 }
 
 void sendLowPhAlert(float phValue) {
