@@ -91,13 +91,6 @@ int cycleStepsCount = 0;
 const int HALF_ROTATION_STEPS = 2048; // 2048 half-steps for 180 degrees
 bool tofTriggered = false;      // To prevent multiple triggers when distance stays < 50mm
 
-void startStepperCycle() {
-  cycleState = 1;
-  cycleStepsCount = 0;
-  stepperDirection = 0; // Stop continuous run if any
-  publishIfChanged("tank/stepper", "CW (Cycle)", lastStepperState);
-  Serial.println("[CYCLE] Starting stepper cycle...");
-}
 // ==========================================
 // PREVIOUS-STATE TRACKING (Publish on change only)
 // Prevents MQTT message flooding while keeping
@@ -108,6 +101,14 @@ String lastPumpState = "";
 String lastFilterState = "";
 String lastLampState = "";
 String lastStepperState = "";
+
+void startStepperCycle() {
+  cycleState = 1;
+  cycleStepsCount = 0;
+  stepperDirection = 0; // Stop continuous run if any
+  publishIfChanged("tank/stepper", "CW (Cycle)", lastStepperState);
+  Serial.println("[CYCLE] Starting stepper cycle...");
+}
 // ==========================================
 // TIMING (All non-blocking via millis/micros)
 // ==========================================
