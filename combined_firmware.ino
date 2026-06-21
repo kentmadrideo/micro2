@@ -9,7 +9,7 @@
 // ==========================================
 const char* ssid = "PLDTHOMEFIBR59cf0";
 const char* password = "Kookie-91197";
-const char* mqtt_server = "192.168.1.16";
+const char* mqtt_server = "192.168.1.10";
 WiFiClient espClient;
 PubSubClient client(espClient);
 // ==========================================
@@ -104,11 +104,12 @@ const long TOF_INTERVAL = 500;        // ToF distance check rate
 unsigned long prevStepMicros = 0;     // Stepper per-step timing
 unsigned long lastReconnectAttempt = 0;
 // ==========================================
-// SENSOR OBJECTS (Both on I2C bus: SDA=21, SCL=22)
-// BH1750 address: 0x23
-// VL53L0X address: 0x29
+// SENSOR OBJECTS
+// - BH1750 on default I2C bus (SDA=21, SCL=22)
+// - VL53L0X on secondary I2C bus (SDA=18, SCL=19)
 // ==========================================
 BH1750 lightMeter;
+TwoWire Wire1 = TwoWire(1);
 Adafruit_VL53L0X lox = Adafruit_VL53L0X();
 // Half-step lookup table for 28BYJ-48 stepper
 const bool stepLookup[8][4] = {
@@ -285,6 +286,8 @@ void setup() {
   Serial.println("=============================================");
   // Initialize shared I2C bus (ESP32 default: SDA=21, SCL=22)
   Wire.begin(21, 22);
+  // Initialize secondary I2C bus for VL53L0X (SDA=18, SCL=19)
+  Wire1.begin(18, 19);
   // --- BH1750 Light Sensor (I2C addr 0x23) ---
   if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE)) {
     Serial.println("[OK] BH1750 Light Sensor ready on I2C.");
@@ -292,7 +295,7 @@ void setup() {
     Serial.println("[ERR] BH1750 failed! Check I2C SDA/SCL wiring.");
   }
   // --- VL53L0X ToF Sensor (I2C addr 0x29) ---
-  if (lox.begin(0x29, false, &Wire)) {
+  if (lox.begin(0x29, false, &Wire1)) {
     Serial.println("[OK] VL53L0X ToF Sensor ready on I2C.");
   } else {
     Serial.println("[ERR] VL53L0X failed! Check I2C SDA/SCL wiring.");
