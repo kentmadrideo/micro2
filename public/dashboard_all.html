@@ -1047,7 +1047,7 @@
           <div class="gauge-container"><div class="gauge-track"><div class="gauge-fill" id="tofGauge" style="width:2%"></div></div><div class="gauge-labels"><span>0 mm</span><span>Threshold: 200 mm</span><span>2000 mm</span></div></div>
           <div class="status-bar"><div class="status-indicator"><div class="status-dot off" id="stepperDot"></div><span id="stepperStatus">Waiting...</span></div><span class="actuator-name">28BYJ-48 Stepper</span></div>
         </div>
-        <div class="card-controls"><div class="control-group"><button class="ctrl-btn" id="stepperCw" onclick="sendCmd('tank/stepper/cmd','CW')">CW</button><button class="ctrl-btn" id="stepperCcw" onclick="sendCmd('tank/stepper/cmd','CCW')">CCW</button><button class="ctrl-btn" id="stepperStop" onclick="sendCmd('tank/stepper/cmd','STOP')">STOP</button><button class="ctrl-btn active-auto" id="stepperAuto" onclick="sendCmd('tank/stepper/cmd','AUTO')">AUTO</button></div></div>
+        <div class="card-controls"><div class="control-group"><button class="ctrl-btn" id="stepperOn" onclick="sendCmd('tank/stepper/cmd','ON')">ON</button><button class="ctrl-btn" id="stepperCw" onclick="sendCmd('tank/stepper/cmd','CW')">CW</button><button class="ctrl-btn" id="stepperCcw" onclick="sendCmd('tank/stepper/cmd','CCW')">CCW</button><button class="ctrl-btn" id="stepperStop" onclick="sendCmd('tank/stepper/cmd','STOP')">STOP</button><button class="ctrl-btn active-auto" id="stepperAuto" onclick="sendCmd('tank/stepper/cmd','AUTO')">AUTO</button></div></div>
       </div>
 
       <div class="io-card camera" id="cameraCard">
@@ -1380,13 +1380,16 @@
     }
 
     function updateStepperButtons(value) {
+      const onBtn = document.getElementById('stepperOn');
       const cwBtn = document.getElementById('stepperCw');
       const ccwBtn = document.getElementById('stepperCcw');
       const stopBtn = document.getElementById('stepperStop');
       const autoBtn = document.getElementById('stepperAuto');
-      [cwBtn, ccwBtn, stopBtn, autoBtn].forEach(btn => { if (btn) btn.className = 'ctrl-btn'; });
+      [onBtn, cwBtn, ccwBtn, stopBtn, autoBtn].forEach(btn => { if (btn) btn.className = 'ctrl-btn'; });
       if (value.includes('Auto')) {
         if (autoBtn) autoBtn.classList.add('active-auto');
+      } else if (value.startsWith('ON')) {
+        if (onBtn) onBtn.classList.add('active-on');
       } else if (value.startsWith('CW')) {
         if (cwBtn) cwBtn.classList.add('active-cw');
       } else if (value.startsWith('CCW')) {

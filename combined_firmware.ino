@@ -36,7 +36,7 @@ const int STEPPER_IN4 = 27;
 const int thresholdADC = 1600;       // Turbidity: below = cloudy
 const float lightThreshold = 2.0;    // BH1750: below = dark (lux)
 const boolean isActiveLowRelay = true;
-const int TOF_THRESHOLD_MM = 200;    // VL53L0X: distance threshold
+const int TOF_THRESHOLD_MM = 50;     // VL53L0X: distance threshold (less than 50mm)
 const int STEP_DELAY_US = 900;       // Stepper speed (lower = faster)
 const float phCalibrationValue = 23.34;
 // GSM / alerting
@@ -82,6 +82,22 @@ bool stepperAuto = true;
 // Non-blocking stepper state
 int stepperDirection = 0;   // -1 = CCW, 0 = STOP, 1 = CW
 int currentStepIndex = 0;
+
+// Stepper Cycle State Machine (Non-blocking Step-Pause-Step)
+int cycleState = 0;             // 0 = Idle, 1 = First Half, 2 = Paused, 3 = Second Half
+unsigned long pauseStartMillis = 0;
+const unsigned long PAUSE_DURATION_MS = 2000;
+int cycleStepsCount = 0;
+const int HALF_ROTATION_STEPS = 2048; // 2048 half-steps for 180 degrees
+bool tofTriggered = false;      // To prevent multiple triggers when distance stays < 50mm
+
+void startStepperCycle() {
+  cycleState = 1;
+  cycleStepsCount = 0;
+  stepperDirection = 0; // Stop continuous run if any
+  publishIfChanged("tank/stepper", "CW (Cycle)", lastStepperState);
+  Serial.println("[CYCLE] Starting stepper cycle...");
+}
 // ==========================================
 // PREVIOUS-STATE TRACKING (Publish on change only)
 // Prevents MQTT message flooding while keeping
@@ -207,19 +223,27 @@ void callback(char* topic, byte* payload, unsigned int length) {
   if (incomingTopic == "tank/stepper/cmd") {
     if (message == "CW") {
       stepperAuto = false;
+      cycleState = 0; // Cancel cycle if any
       stepperDirection = 1;
       publishIfChanged("tank/stepper", "CW (Manual)", lastStepperState);
     } else if (message == "CCW") {
       stepperAuto = false;
+      cycleState = 0; // Cancel cycle if any
       stepperDirection = -1;
       publishIfChanged("tank/stepper", "CCW (Manual)", lastStepperState);
     } else if (message == "STOP") {
       stepperAuto = false;
+      cycleState = 0; // Cancel cycle if any
       stepperDirection = 0;
       stopStepper();
       publishIfChanged("tank/stepper", "STOPPED (Manual)", lastStepperState);
+    } else if (message == "ON") {
+      stepperAuto = false;
+      startStepperCycle();
+      publishIfChanged("tank/stepper", "ON (Manual)", lastStepperState);
     } else if (message == "AUTO") {
       stepperAuto = true;
+      cycleState = 0; // Cancel cycle if any
       Serial.println("[MODE] Stepper -> AUTO");
     }
   }
@@ -454,13 +478,8 @@ void loop() {
         for (int i = 0; i < SCHEDULE_HOURS_COUNT; i++) {
           if (isWithinScheduleWindow(SCHEDULE_HOURS[i])) {
             if (!scheduledTriggered[i]) {
-              Serial.println("[SCHEDULE] TOF close and time matched -> starting scheduled stepper run");
-              // save and override auto state
-              prevStepperAuto = stepperAuto;
-              stepperAuto = false;
-              stepperDirection = 1; // CW
-              scheduledStepperActive = true;
-              scheduledStepperEndMillis = millis() + 5000UL; // run for 5 seconds
+              Serial.println("[SCHEDULE] TOF close and time matched -> starting scheduled stepper cycle");
+              startStepperCycle();
               scheduledTriggered[i] = true;
             }
           } else {
@@ -469,16 +488,21 @@ void loop() {
           }
         }
       }
-      // Auto stepper control based on distance
+      // Auto stepper control based on distance (< 50mm triggers cycle, else idle)
       if (stepperAuto) {
         if (distance_mm <= TOF_THRESHOLD_MM) {
-          stepperDirection = 1;
-          publishIfChanged("tank/stepper", "CW (Auto)", lastStepperState);
-          Serial.println("  [AUTO] <= 200mm -> Stepper CW");
+          if (!tofTriggered) {
+            tofTriggered = true;
+            startStepperCycle();
+            Serial.println("  [AUTO] <= 50mm -> Triggered Stepper Cycle");
+          }
         } else {
-          stepperDirection = -1;
-          publishIfChanged("tank/stepper", "CCW (Auto)", lastStepperState);
-          Serial.println("  [AUTO] > 200mm -> Stepper CCW");
+          tofTriggered = false; // Reset trigger when out of range
+          if (cycleState == 0) {
+            stepperDirection = 0;
+            stopStepper();
+            publishIfChanged("tank/stepper", "STOPPED (Auto)", lastStepperState);
+          }
         }
       }
     } else {
@@ -487,33 +511,64 @@ void loop() {
         client.publish("tank/tof", "-1");
       }
       if (stepperAuto) {
-        stepperDirection = 0;
-        stopStepper();
-        publishIfChanged("tank/stepper", "STOPPED (Auto)", lastStepperState);
+        tofTriggered = false;
+        if (cycleState == 0) {
+          stepperDirection = 0;
+          stopStepper();
+          publishIfChanged("tank/stepper", "STOPPED (Auto)", lastStepperState);
+        }
       }
     }
   }
   // ------------------------------------------
   // 4. STEPPER MOTOR (non-blocking, per-step)
-  //    Steps one phase at a time using micros()
-  //    instead of a blocking full-rotation loop.
+  //    Handles continuous running and the step-pause-step cycle
   // ------------------------------------------
-  if (stepperDirection != 0) {
+  if (cycleState > 0) {
+    // Running step-pause-step cycle
+    if (cycleState == 1) {
+      // First half of rotation (180 degrees)
+      if (currentMicros - prevStepMicros >= (unsigned long)STEP_DELAY_US) {
+        prevStepMicros = currentMicros;
+        singleStep(true); // Rotate CW
+        cycleStepsCount++;
+        if (cycleStepsCount >= HALF_ROTATION_STEPS) {
+          stopStepper(); // De-energize motor while paused
+          cycleState = 2; // Pause state
+          pauseStartMillis = millis();
+          publishIfChanged("tank/stepper", "PAUSED (Cycle)", lastStepperState);
+          Serial.println("[CYCLE] First half complete. Pausing for 2s...");
+        }
+      }
+    } else if (cycleState == 2) {
+      // Pause for 2 seconds
+      if (millis() - pauseStartMillis >= PAUSE_DURATION_MS) {
+        cycleState = 3; // Move to second half
+        cycleStepsCount = 0;
+        publishIfChanged("tank/stepper", "CW (Cycle)", lastStepperState);
+        Serial.println("[CYCLE] Pause complete. Starting second half...");
+      }
+    } else if (cycleState == 3) {
+      // Second half of rotation (180 degrees)
+      if (currentMicros - prevStepMicros >= (unsigned long)STEP_DELAY_US) {
+        prevStepMicros = currentMicros;
+        singleStep(true); // Rotate CW
+        cycleStepsCount++;
+        if (cycleStepsCount >= HALF_ROTATION_STEPS) {
+          stopStepper(); // Done
+          cycleState = 0; // Back to Idle
+          publishIfChanged("tank/stepper", "STOPPED (Cycle)", lastStepperState);
+          Serial.println("[CYCLE] Cycle complete. Stepper stopped.");
+        }
+      }
+    }
+  } else if (stepperDirection != 0) {
+    // Regular continuous manual override (CW or CCW)
     if (currentMicros - prevStepMicros >= (unsigned long)STEP_DELAY_US) {
       prevStepMicros = currentMicros;
       singleStep(stepperDirection > 0);
     }
   }
-  // handle scheduled stepper stop after duration
-  if (scheduledStepperActive && millis() >= scheduledStepperEndMillis) {
-    Serial.println("[SCHEDULE] Scheduled stepper run complete -> stopping stepper");
-    stopStepper();
-    scheduledStepperActive = false;
-    stepperDirection = 0;
-    // restore previous auto-behavior
-    stepperAuto = prevStepperAuto;
-  }
-  // When direction is 0, coils stay de-energized from stopStepper()
 }
 // ==========================================
 // RELAY HELPER (Preserves your pump high-Z fix)

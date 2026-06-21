@@ -803,6 +803,7 @@
         </div>
         <div class="card-controls">
           <div class="control-group">
+            <button class="ctrl-btn" id="stepperOn" onclick="sendCmd('tank/stepper/cmd','ON')">ON</button>
             <button class="ctrl-btn" id="stepperCw" onclick="sendCmd('tank/stepper/cmd','CW')">CW</button>
             <button class="ctrl-btn" id="stepperCcw" onclick="sendCmd('tank/stepper/cmd','CCW')">CCW</button>
             <button class="ctrl-btn" id="stepperStop" onclick="sendCmd('tank/stepper/cmd','STOP')">STOP</button>
@@ -1020,21 +1021,24 @@
       modeBadge.textContent = isAuto ? 'AUTO' : 'MANUAL';
       modeBadge.className = 'mode-badge ' + (isAuto ? 'auto' : 'manual');
     }
-
+    updateStepperButtons(value);
   }
 
   function updateStepperButtons(value) {
+    const onBtn = document.getElementById('stepperOn');
     const cwBtn = document.getElementById('stepperCw');
     const ccwBtn = document.getElementById('stepperCcw');
     const stopBtn = document.getElementById('stepperStop');
     const autoBtn = document.getElementById('stepperAuto');
 
-    [cwBtn, ccwBtn, stopBtn, autoBtn].forEach(btn => {
+    [onBtn, cwBtn, ccwBtn, stopBtn, autoBtn].forEach(btn => {
       if (btn) btn.className = 'ctrl-btn';
     });
 
     if (typeof value === 'string' && value.includes('Auto')) {
       if (autoBtn) autoBtn.classList.add('active-auto');
+    } else if (typeof value === 'string' && value.startsWith('ON')) {
+      if (onBtn) onBtn.classList.add('active-on');
     } else if (typeof value === 'string' && value.startsWith('CW')) {
       if (cwBtn) cwBtn.classList.add('active-cw');
     } else if (typeof value === 'string' && value.startsWith('CCW')) {
