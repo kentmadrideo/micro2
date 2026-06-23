@@ -62,12 +62,13 @@ INDEX_FILENAME = 'index.json'
 MOTION_BOX_PADDING = 12
 MOTION_MAX_BOXES = 5
 # Motion detection tuning
-MOG2_HISTORY = 500        # frames of history for MOG2 background model
-MOG2_VAR_THRESHOLD = 30   # variance threshold for foreground classification (highly sensitive but stable)
-BACKGROUND_ADAPTATION_SECONDS = 50.0  # background adapts to gradual lighting changes over this period
-MIN_CONTOUR_AREA = 150    # minimum contour area to count as motion (in 320x240 analysis resolution)
-WARMUP_FRAMES = 40        # frames to let background model stabilize before detecting
+MOG2_HISTORY = 200        # frames of history for MOG2 background model
+MOG2_VAR_THRESHOLD = 24   # variance threshold for foreground classification (highly sensitive but stable)
+BACKGROUND_ADAPTATION_SECONDS = 20.0  # background adapts to gradual lighting changes over this period
+MIN_CONTOUR_AREA = 120    # minimum contour area to count as motion (in 320x240 analysis resolution)
+WARMUP_FRAMES = 100       # frames to let background model stabilize before detecting
 MAX_CONTOUR_ASPECT = 5.0  # reject contours with aspect ratio above this (edge artifacts)
+MIN_CONTOUR_EXTENT = 0.15  # reject thin lines/wires (diagonal or straight) with low fill ratio
 CONSECUTIVE_FRAMES_REQUIRED = 3  # require motion in N consecutive frames before showing boxes
 ANALYSIS_RESOLUTION = (320, 240)  # lower resolution for faster, less noisy analysis
 # ==========================================
@@ -426,9 +427,12 @@ class MotionMonitor:
       objects from being absorbed (which caused ghost boxes at old positions).
     """
 
+
+
     def __init__(self):
         self.lock = Lock()
         self.mog2 = None          # MOG2 background subtractor
+        self.clahe = None         # CLAHE contrast equalizer
         self.warmup_count = 0     # frames processed during warmup
         self.last_motion_time = time.time()
         self.motion_score = 0.0
@@ -495,6 +499,13 @@ class MotionMonitor:
         else:
             gray_analysis = gray
 
+        # Initialize CLAHE if not already done
+        if not hasattr(self, 'clahe') or self.clahe is None:
+            self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        
+        # Apply CLAHE to stabilize lighting and enhance local contrast
+        gray_analysis = self.clahe.apply(gray_analysis)
+
         # Standard Gaussian blur size to filter high frequency sensor noise while keeping fish shape
         gray_analysis = cv2.GaussianBlur(gray_analysis, (7, 7), 0)
 
@@ -536,9 +547,9 @@ class MotionMonitor:
             contours = cv2.findContours(fg_mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             contours = contours[0] if len(contours) == 2 else contours[1]
 
-            # Filter contours by area and aspect ratio
+            # Filter contours by area, aspect ratio, and fill extent (to reject thin lines/wires)
             analysis_area = gray_analysis.shape[0] * gray_analysis.shape[1]
-            max_contour_area = analysis_area * 0.40
+            max_contour_area = analysis_area * 0.60  # Increase to 60% to support large hand movements close to camera
 
             raw_boxes = []
             for contour in contours:
@@ -546,10 +557,17 @@ class MotionMonitor:
                 if area < MIN_CONTOUR_AREA or area > max_contour_area:
                     continue
                 x, y, w, h = cv2.boundingRect(contour)
+                
                 # Reject very elongated shapes (edge/line artifacts)
                 aspect = max(w, h) / max(min(w, h), 1)
                 if aspect > MAX_CONTOUR_ASPECT:
                     continue
+                
+                # Reject thin diagonal wires or line noise using Extent
+                extent = float(area) / float(w * h)
+                if extent < MIN_CONTOUR_EXTENT:
+                    continue
+
                 raw_boxes.append((x, y, w, h))
 
             # Limit to the max number of boxes to avoid cluttering
