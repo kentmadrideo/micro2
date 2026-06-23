@@ -7,9 +7,9 @@
 // ==========================================
 // NETWORK CONFIGURATION
 // ==========================================
-const char* ssid = "PLDTHOMEFIBR59cf0";
-const char* password = "Kookie-91197";
-const char* mqtt_server = "192.168.1.10";
+const char* ssid = "namespace_____";
+const char* password = "erikahahaha";
+const char* mqtt_server = "10.154.116.26";
 WiFiClient espClient;
 PubSubClient client(espClient);
 // ==========================================

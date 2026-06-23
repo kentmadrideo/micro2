@@ -14,6 +14,15 @@ try:
     from picamera2 import Picamera2
     from picamera2.encoders import MJPEGEncoder
     from picamera2.outputs import FileOutput
+    try:
+        from libcamera import Transform, controls
+    except ImportError:
+        try:
+            from picamera2 import Transform, controls
+        except ImportError:
+            class Transform:
+                def __init__(self, **kwargs): pass
+            controls = None
     PICAMERA2_AVAILABLE = True
 except ImportError:
     PICAMERA2_AVAILABLE = False
@@ -682,23 +691,52 @@ if PICAMERA2_AVAILABLE:
     def main():
         print("Initializing native Picamera2 stream...")
         picam2 = Picamera2()
-        config = picam2.create_video_configuration(main={"size": (640, 480)})
+        
+        # Setup rotation transform
+        transform = Transform()
+        if ROTATION == 180:
+            transform = Transform(hflip=True, vflip=True)
+        elif ROTATION != 0:
+            logging.warning('Rotation %s is not supported directly by libcamera/picamera2. Only 180 degrees is supported via transform.', ROTATION)
+            
+        config = picam2.create_video_configuration(main={"size": (640, 480)}, transform=transform)
         picam2.configure(config)
+        
+        # Start the camera so properties are loaded and controls can be set
+        picam2.start()
 
         # Keep the crop close to the full sensor area so the view is slightly wider.
         # This uses the full sensor area, which is the widest software view available.
+        # Calculate aspect-ratio-matched ScalerCrop to avoid distortion and invalid ranges on Camera Module v3 (16:9 sensor)
         try:
             sensor_w, sensor_h = picam2.camera_properties["PixelArraySize"]
-            crop_w = sensor_w
-            crop_h = sensor_h
-            crop_x = 0
-            crop_y = 0
+            stream_w, stream_h = 640, 480
+            sensor_aspect = sensor_w / sensor_h
+            stream_aspect = stream_w / stream_h
+            
+            if sensor_aspect > stream_aspect:
+                crop_h = sensor_h
+                crop_w = int(sensor_h * stream_aspect)
+                crop_x = (sensor_w - crop_w) // 2
+                crop_y = 0
+            else:
+                crop_w = sensor_w
+                crop_h = int(sensor_w / stream_aspect)
+                crop_x = 0
+                crop_y = (sensor_h - crop_h) // 2
+                
             picam2.set_controls({"ScalerCrop": (crop_x, crop_y, crop_w, crop_h)})
+            print(f"Applied ScalerCrop: {crop_x, crop_y, crop_w, crop_h} matching {stream_w}x{stream_h} aspect ratio.")
         except Exception as e:
             logging.warning('Failed to apply zoom-out crop: %s', e)
         
-        if ROTATION != 0:
-            picam2.set_controls({"Rotation": ROTATION})
+        # Enable Continuous Autofocus if supported (Camera Module v3)
+        try:
+            if controls is not None and "AfMode" in picam2.camera_controls:
+                picam2.set_controls({"AfMode": controls.AfModeEnum.Continuous})
+                print("Continuous autofocus enabled.")
+        except Exception as e:
+            logging.warning('Failed to enable continuous autofocus: %s', e)
             
         picam2.start_recording(MJPEGEncoder(), FileOutput(output))
         # Start periodic snapshot saver
@@ -723,6 +761,7 @@ if PICAMERA2_AVAILABLE:
             print("\nShutting down server...")
         finally:
             picam2.stop_recording()
+            picam2.stop()
             picam2.close()
             try:
                 SNAPSHOT_SAVER.stop()
@@ -740,6 +779,9 @@ else:
             self.thread = None
             
         def start(self):
+            if not CV2_AVAILABLE:
+                print("OpenCV (cv2) is not available. Camera fallback cannot capture frames.")
+                return
             self.running = True
             # For fallback, try native CAP_V4L2
             self.camera = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_V4L2)
@@ -775,7 +817,7 @@ else:
                 
         def stop(self):
             self.running = False
-            if self.camera:
+            if CV2_AVAILABLE and self.camera:
                 self.camera.release()
 
     camera_buffer = CameraBuffer()
