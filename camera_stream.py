@@ -62,11 +62,14 @@ INDEX_FILENAME = 'index.json'
 MOTION_BOX_PADDING = 12
 MOTION_MAX_BOXES = 5
 # Motion detection tuning
-BACKGROUND_ALPHA = 0.005  # background learning rate (very slow so fish aren't absorbed)
-MOTION_THRESHOLD = 40     # pixel diff threshold (high enough to reject JPEG compression noise)
-MIN_CONTOUR_AREA = 1500   # minimum contour area to count as motion
-WARMUP_FRAMES = 30        # frames to let background model stabilize before detecting
+MOG2_HISTORY = 300        # frames of history for MOG2 background model
+MOG2_VAR_THRESHOLD = 40   # variance threshold for foreground classification
+MOG2_LEARNING_RATE = 0.002  # very slow learning so moving fish aren't absorbed
+MIN_CONTOUR_AREA = 800    # minimum contour area to count as motion (in analysis resolution)
+WARMUP_FRAMES = 40        # frames to let background model stabilize before detecting
 MAX_CONTOUR_ASPECT = 5.0  # reject contours with aspect ratio above this (edge artifacts)
+CONSECUTIVE_FRAMES_REQUIRED = 2  # require motion in N consecutive frames before showing boxes
+ANALYSIS_RESOLUTION = (320, 240)  # lower resolution for faster, less noisy analysis
 # ==========================================
 
 PAGE = """\
@@ -320,17 +323,56 @@ pollTimer = setInterval(pollStatus, 4000);
 
 
 class MotionMonitor:
+    """Motion detector using OpenCV MOG2 background subtractor on raw frames.
+
+    Key design decisions:
+    - Uses MOG2 (Mixture of Gaussians) which statistically models each pixel
+      as a mixture of distributions, handling sensor noise and water shimmer.
+    - Analyzes RAW numpy frames (not JPEG-decoded) to avoid compression artifact
+      noise that caused false detections on static areas.
+    - Requires motion in CONSECUTIVE_FRAMES_REQUIRED consecutive analysis cycles
+      before showing boxes (temporal consistency), eliminating transient false positives.
+    - Scales box coordinates from analysis resolution to main stream resolution
+      so overlays align correctly on the full-size video.
+    - Background model only learns when no motion is detected, preventing moving
+      objects from being absorbed (which caused ghost boxes at old positions).
+    """
+
     def __init__(self):
         self.lock = Lock()
-        self.bg = None            # background model (float32 grayscale)
-        self.warmup_count = 0     # frames processed so far during warmup
+        self.mog2 = None          # MOG2 background subtractor
+        self.warmup_count = 0     # frames processed during warmup
         self.last_motion_time = time.time()
         self.motion_score = 0.0
-        self.motion_boxes = []
+        self.motion_boxes = []    # boxes in MAIN stream coordinates
         self.state = 'unknown'
         self.last_update = time.time()
+        # Temporal consistency: require consecutive detections
+        self.consecutive_detections = 0
+        self.pending_boxes = []   # candidate boxes awaiting confirmation
+        # Coordinate scaling (set when analysis resolution differs from stream)
+        self.scale_x = 1.0
+        self.scale_y = 1.0
 
-    def update(self, frame_bytes):
+    def _init_mog2(self):
+        """Initialize the MOG2 background subtractor."""
+        if CV2_AVAILABLE:
+            self.mog2 = cv2.createBackgroundSubtractorMOG2(
+                history=MOG2_HISTORY,
+                varThreshold=MOG2_VAR_THRESHOLD,
+                detectShadows=False  # no shadow detection needed for aquarium
+            )
+            # Reduce the number of Gaussian components to be more selective
+            self.mog2.setNMixtures(3)
+
+    def update_raw(self, frame, main_size=None):
+        """Process a raw numpy frame (BGR or grayscale, NOT JPEG compressed).
+
+        Args:
+            frame: numpy array from camera (raw, no JPEG encoding).
+            main_size: (width, height) of the main stream for coordinate scaling.
+                       If None, no scaling is applied.
+        """
         if not CV2_AVAILABLE or not NUMPY_AVAILABLE:
             with self.lock:
                 self.state = 'unavailable'
@@ -339,92 +381,118 @@ class MotionMonitor:
 
         now = time.time()
         with self.lock:
-            if now - self.last_update < MOTION_CHECK_INTERVAL and self.bg is not None:
+            if now - self.last_update < MOTION_CHECK_INTERVAL and self.mog2 is not None:
                 return
 
-        frame = cv2.imdecode(np.frombuffer(frame_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
         if frame is None:
             return
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        # Convert to grayscale depending on input format
+        if len(frame.shape) == 3:
+            if frame.shape[2] == 4:  # XBGR8888 / BGRA
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGRA2GRAY)
+            else:  # BGR / RGB (3-channel)
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        elif len(frame.shape) == 2:
+            # Already grayscale or Y-channel from YUV
+            gray = frame
+        else:
+            return
+
         gray = cv2.GaussianBlur(gray, (21, 21), 0)
 
         with self.lock:
-            # --- Warmup phase: build a stable background before detecting ---
-            if self.bg is None:
-                self.bg = gray.astype('float32')
-                self.warmup_count = 1
-                self.last_update = now
-                self.state = 'unknown'
-                self.motion_boxes = []
-                return
+            # Compute coordinate scaling from analysis resolution to main stream
+            if main_size is not None:
+                self.scale_x = main_size[0] / gray.shape[1]
+                self.scale_y = main_size[1] / gray.shape[0]
 
+            # Initialize MOG2 on first frame
+            if self.mog2 is None:
+                self._init_mog2()
+
+            # --- Warmup phase: train the background model without detecting ---
             if self.warmup_count < WARMUP_FRAMES:
-                # Fast blend during warmup to converge the background quickly
-                cv2.accumulateWeighted(gray, self.bg, 0.5)
+                # Fast learning rate during warmup to converge quickly
+                self.mog2.apply(gray, learningRate=0.15)
                 self.warmup_count += 1
                 self.last_update = now
                 self.state = 'unknown'
                 self.motion_boxes = []
                 return
 
-            # --- Detection phase: background subtraction only ---
-            # Compare current frame against the stable background model.
-            # We intentionally do NOT use frame-to-frame diff because with
-            # JPEG-compressed input the re-encoding artifacts produce random
-            # pixel differences that look like motion.
-            bg_frame = cv2.convertScaleAbs(self.bg)
-            delta = cv2.absdiff(bg_frame, gray)
+            # --- Detection phase: MOG2 background subtraction ---
+            # Use a very slow learning rate so moving fish are NOT absorbed
+            # into the background model. The model only adapts to gradual
+            # lighting changes over many seconds.
+            fg_mask = self.mog2.apply(gray, learningRate=0.0)  # no learning during detection
 
-            # Threshold: set high enough (40) to reject JPEG quantization noise
-            thresh = cv2.threshold(delta, MOTION_THRESHOLD, 255, cv2.THRESH_BINARY)[1]
+            # Clean up the foreground mask
+            # Elliptical kernel handles natural shapes better than rectangular
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+            fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, kernel)
+            fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, kernel)
+            fg_mask = cv2.dilate(fg_mask, None, iterations=2)
 
-            # Morphological opening with a 9x9 kernel to suppress JPEG 8x8
-            # block-boundary artifacts and small water shimmer noise
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
-            thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
-            # Dilate to merge nearby regions into coherent contours
-            thresh = cv2.dilate(thresh, None, iterations=2)
-
-            contours = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contours = cv2.findContours(fg_mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             contours = contours[0] if len(contours) == 2 else contours[1]
 
-            # Reject contours that are too small, too large (lighting change),
-            # or have an extreme aspect ratio (edge/line artifacts)
-            frame_area = frame.shape[0] * frame.shape[1]
-            max_contour_area = frame_area * 0.40
+            # Filter contours by area and aspect ratio
+            analysis_area = gray.shape[0] * gray.shape[1]
+            max_contour_area = analysis_area * 0.40
 
-            boxes = []
+            raw_boxes = []
             for contour in contours:
                 area = cv2.contourArea(contour)
                 if area < MIN_CONTOUR_AREA or area > max_contour_area:
                     continue
                 x, y, w, h = cv2.boundingRect(contour)
-                # Aspect ratio filter: reject very elongated artifacts
+                # Reject very elongated shapes (edge/line artifacts)
                 aspect = max(w, h) / max(min(w, h), 1)
                 if aspect > MAX_CONTOUR_ASPECT:
                     continue
-                x = max(0, x - MOTION_BOX_PADDING)
-                y = max(0, y - MOTION_BOX_PADDING)
-                w = min(frame.shape[1] - x, w + (MOTION_BOX_PADDING * 2))
-                h = min(frame.shape[0] - y, h + (MOTION_BOX_PADDING * 2))
-                boxes.append((x, y, w, h))
+                # Scale coordinates to main stream resolution and add padding
+                sx = int(x * self.scale_x)
+                sy = int(y * self.scale_y)
+                sw = int(w * self.scale_x)
+                sh = int(h * self.scale_y)
+                sx = max(0, sx - MOTION_BOX_PADDING)
+                sy = max(0, sy - MOTION_BOX_PADDING)
+                sw = sw + (MOTION_BOX_PADDING * 2)
+                sh = sh + (MOTION_BOX_PADDING * 2)
+                raw_boxes.append((sx, sy, sw, sh))
 
-            boxes.sort(key=lambda item: item[2] * item[3], reverse=True)
-            boxes = boxes[:MOTION_MAX_BOXES]
+            raw_boxes.sort(key=lambda b: b[2] * b[3], reverse=True)
+            raw_boxes = raw_boxes[:MOTION_MAX_BOXES]
 
-            motion_score = float(cv2.countNonZero(thresh))
-            has_motion = len(boxes) > 0
+            motion_score = float(cv2.countNonZero(fg_mask))
+            has_candidates = len(raw_boxes) > 0
+
+            # --- Temporal consistency: require consecutive detections ---
+            # This eliminates transient false positives from noise spikes,
+            # autofocus adjustments, or momentary reflections.
+            if has_candidates:
+                self.consecutive_detections += 1
+                self.pending_boxes = raw_boxes
+            else:
+                self.consecutive_detections = 0
+                self.pending_boxes = []
+
+            if self.consecutive_detections >= CONSECUTIVE_FRAMES_REQUIRED:
+                self.motion_boxes = self.pending_boxes
+                has_motion = True
+            else:
+                self.motion_boxes = []
+                has_motion = False
 
             self.motion_score = motion_score
-            self.motion_boxes = boxes
             self.last_update = time.time()
 
             # --- Background update: ONLY when no motion is detected ---
-            # This is critical: if we update the background during motion,
-            # the moving object gets absorbed and we get ghost detections
-            # at its old position instead of tracking the actual movement.
+            # When the scene is still, let MOG2 slowly adapt to lighting changes.
+            # During motion, freeze the background so the moving object isn't absorbed.
             if not has_motion:
-                cv2.accumulateWeighted(gray, self.bg, BACKGROUND_ALPHA)
+                self.mog2.apply(gray, learningRate=MOG2_LEARNING_RATE)
 
             if has_motion:
                 self.last_motion_time = time.time()
@@ -433,6 +501,20 @@ class MotionMonitor:
                 self.state = 'inactive'
             else:
                 self.state = 'quiet'
+
+    def update(self, frame_bytes):
+        """Fallback: process a JPEG-compressed frame (less accurate than update_raw)."""
+        if not CV2_AVAILABLE or not NUMPY_AVAILABLE:
+            with self.lock:
+                self.state = 'unavailable'
+                self.motion_boxes = []
+            return
+        try:
+            frame = cv2.imdecode(np.frombuffer(frame_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if frame is not None:
+                self.update_raw(frame)
+        except Exception:
+            pass
 
     def snapshot(self):
         with self.lock:
@@ -598,7 +680,8 @@ if PICAMERA2_AVAILABLE:
             self.condition = Condition()
 
         def write(self, buf):
-            MOTION_MONITOR.update(buf)
+            # Do NOT run motion analysis on JPEG bytes here.
+            # Motion analysis is done on raw lores frames in a separate thread.
             with self.condition:
                 self.frame = buf
                 self.condition.notify_all()
@@ -746,7 +829,18 @@ if PICAMERA2_AVAILABLE:
         elif ROTATION != 0:
             logging.warning('Rotation %s is not supported directly by libcamera/picamera2. Only 180 degrees is supported via transform.', ROTATION)
             
-        config = picam2.create_video_configuration(main={"size": (640, 480)}, transform=transform)
+        # Configure DUAL streams:
+        #   main  = 640x480 for MJPEG encoding (sent to viewers)
+        #   lores = 320x240 for motion analysis (raw numpy, no JPEG compression)
+        # This eliminates JPEG artifact noise from motion detection entirely.
+        main_size = (640, 480)
+        lores_size = ANALYSIS_RESOLUTION
+        config = picam2.create_video_configuration(
+            main={"size": main_size},
+            lores={"size": lores_size, "format": "YUV420"},
+            transform=transform,
+            buffer_count=4
+        )
         picam2.configure(config)
         
         # Start the camera so properties are loaded and controls can be set
@@ -760,11 +854,10 @@ if PICAMERA2_AVAILABLE:
             logging.warning('Failed to set FrameRate control: %s', e)
 
         # Keep the crop close to the full sensor area so the view is slightly wider.
-        # This uses the full sensor area, which is the widest software view available.
         # Calculate aspect-ratio-matched ScalerCrop to avoid distortion and invalid ranges on Camera Module v3 (16:9 sensor)
         try:
             sensor_w, sensor_h = picam2.camera_properties["PixelArraySize"]
-            stream_w, stream_h = 640, 480
+            stream_w, stream_h = main_size
             sensor_aspect = sensor_w / sensor_h
             stream_aspect = stream_w / stream_h
             
@@ -793,6 +886,30 @@ if PICAMERA2_AVAILABLE:
             logging.warning('Failed to enable continuous autofocus: %s', e)
             
         picam2.start_recording(MJPEGEncoder(), FileOutput(output))
+
+        # --- Start raw-frame motion analysis thread ---
+        # This thread grabs uncompressed frames from the lores stream for
+        # motion detection, completely bypassing JPEG compression artifacts.
+        analysis_running = True
+        def _motion_analysis_loop():
+            lores_h, lores_w = lores_size[1], lores_size[0]
+            while analysis_running:
+                try:
+                    # capture_array("lores") returns raw YUV420 numpy array.
+                    # Shape is (height * 1.5, width) — the Y channel (top rows) is grayscale.
+                    yuv = picam2.capture_array("lores")
+                    if yuv is not None:
+                        # Extract Y channel (grayscale) from YUV420
+                        gray = yuv[:lores_h, :lores_w]
+                        MOTION_MONITOR.update_raw(gray, main_size=main_size)
+                except Exception as e:
+                    logging.warning('Motion analysis error: %s', e)
+                time.sleep(MOTION_CHECK_INTERVAL)
+
+        analysis_thread = Thread(target=_motion_analysis_loop, daemon=True)
+        analysis_thread.start()
+        print(f"Motion analysis thread started (raw {lores_size[0]}x{lores_size[1]} frames, no JPEG).")
+
         # Start periodic snapshot saver
         try:
             SNAPSHOT_SAVER.start()
@@ -814,6 +931,7 @@ if PICAMERA2_AVAILABLE:
         except KeyboardInterrupt:
             print("\nShutting down server...")
         finally:
+            analysis_running = False
             picam2.stop_recording()
             picam2.stop()
             picam2.close()
@@ -849,14 +967,15 @@ else:
             while self.running:
                 success, frame = self.camera.read()
                 if success:
-                    # 1. Encode the clean frame first for motion detection and storage
+                    # Pass RAW BGR frame directly to motion monitor (no JPEG encoding)
+                    MOTION_MONITOR.update_raw(frame)
+                    
+                    # Encode clean frame for storage
                     ret, jpeg = cv2.imencode('.jpg', frame)
                     if ret:
                         jpeg_bytes = jpeg.tobytes()
-                        # Update motion monitor with clean frame bytes
-                        MOTION_MONITOR.update(jpeg_bytes)
                         
-                        # 2. Draw overlay on a copy of the frame for the stream
+                        # Draw overlay on a copy of the frame for the stream
                         annotated_frame = MOTION_MONITOR.draw_overlay(frame)
                         ret_ann, jpeg_ann = cv2.imencode('.jpg', annotated_frame)
                         
