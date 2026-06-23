@@ -1725,6 +1725,11 @@
         text.textContent = 'NO MOTION';
         badge.textContent = 'NO MOTION';
         badge.className = 'mode-badge manual';
+      } else if (state === 'unavailable') {
+        dot.className = 'status-dot off';
+        text.textContent = 'UNAVAILABLE';
+        badge.textContent = 'UNAVAILABLE';
+        badge.className = 'mode-badge manual';
       } else {
         dot.className = 'status-dot off';
         text.textContent = 'WARMING';

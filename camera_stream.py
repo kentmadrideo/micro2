@@ -32,6 +32,7 @@ try:
     CV2_AVAILABLE = True
 except ImportError:
     CV2_AVAILABLE = False
+    print("WARNING: OpenCV (cv2) is not installed! Motion detection and overlay drawing will be disabled.")
 
 import threading
 
@@ -40,6 +41,7 @@ try:
     NUMPY_AVAILABLE = True
 except ImportError:
     NUMPY_AVAILABLE = False
+    print("WARNING: NumPy is not installed! Motion detection will be disabled.")
 
 # ==========================================
 # CONFIGURATION
