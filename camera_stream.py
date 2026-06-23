@@ -59,9 +59,9 @@ INDEX_FILENAME = 'index.json'
 MOTION_BOX_PADDING = 12
 MOTION_MAX_BOXES = 5
 # Improved sensitivity settings
-BACKGROUND_ALPHA = 0.02   # running average update speed (lower = slower adapt)
-MOTION_THRESHOLD = 15     # pixel diff threshold (lower = more sensitive)
-MIN_CONTOUR_AREA = 400    # smaller area to catch slow/smaller motion
+BACKGROUND_ALPHA = 0.05   # running average update speed (higher = faster adapt to noise/light)
+MOTION_THRESHOLD = 25     # pixel diff threshold (higher = ignore light shimmers)
+MIN_CONTOUR_AREA = 1000    # minimum size of motion (higher = ignore tiny particles/currents)
 # ==========================================
 
 PAGE = """\
@@ -716,10 +716,10 @@ if PICAMERA2_AVAILABLE:
         # Start the camera so properties are loaded and controls can be set
         picam2.start()
 
-        # Set the framerate to 15 FPS for lower CPU usage and smooth video
+        # Set the framerate to 24 FPS for smoother video
         try:
-            picam2.set_controls({"FrameRate": 15})
-            print("Camera framerate set to 15 FPS.")
+            picam2.set_controls({"FrameRate": 24})
+            print("Camera framerate set to 24 FPS.")
         except Exception as e:
             logging.warning('Failed to set FrameRate control: %s', e)
 
