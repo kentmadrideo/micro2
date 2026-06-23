@@ -805,6 +805,7 @@ else:
         def __init__(self):
             self.camera = None
             self.latest_frame = None
+            self.latest_annotated_frame = None
             self.lock = threading.Lock()
             self.running = False
             self.thread = None
@@ -825,12 +826,23 @@ else:
             while self.running:
                 success, frame = self.camera.read()
                 if success:
-                    frame = MOTION_MONITOR.draw_overlay(frame)
+                    # 1. Encode the clean frame first for motion detection and storage
                     ret, jpeg = cv2.imencode('.jpg', frame)
                     if ret:
-                        MOTION_MONITOR.update(jpeg.tobytes())
+                        jpeg_bytes = jpeg.tobytes()
+                        # Update motion monitor with clean frame bytes
+                        MOTION_MONITOR.update(jpeg_bytes)
+                        
+                        # 2. Draw overlay on a copy of the frame for the stream
+                        annotated_frame = MOTION_MONITOR.draw_overlay(frame)
+                        ret_ann, jpeg_ann = cv2.imencode('.jpg', annotated_frame)
+                        
                         with self.lock:
-                            self.latest_frame = jpeg.tobytes()
+                            self.latest_frame = jpeg_bytes
+                            if ret_ann:
+                                self.latest_annotated_frame = jpeg_ann.tobytes()
+                            else:
+                                self.latest_annotated_frame = jpeg_bytes
                 else:
                     print("Warning: Failed to capture frame from camera. Reconnecting in 2s...")
                     time.sleep(2)
@@ -845,6 +857,10 @@ else:
         def get_frame(self):
             with self.lock:
                 return self.latest_frame
+
+        def get_annotated_frame(self):
+            with self.lock:
+                return self.latest_annotated_frame
                 
         def stop(self):
             self.running = False
@@ -887,7 +903,7 @@ else:
                 try:
                     last_frame = None
                     while True:
-                        frame = camera_buffer.get_frame()
+                        frame = camera_buffer.get_annotated_frame()
                         if frame is None:
                             time.sleep(0.1)
                             continue
