@@ -52,8 +52,8 @@ except ImportError:
 PORT = 8000
 CAMERA_INDEX = 0      # Used only if falling back to OpenCV/USB Webcam
 ROTATION = 0          # Set to 180 if camera is mounted upside down
-MOTION_CHECK_INTERVAL = 0.5
-MOTION_MIN_AREA = 1200
+MOTION_CHECK_INTERVAL = 0.1  # 10 FPS tracking for real-time responsiveness and smooth overlay
+MOTION_MIN_AREA = 150        # aligned with MIN_CONTOUR_AREA
 MOTION_STILL_SECONDS = 20
 SNAPSHOT_INTERVAL = 10
 GALLERY_DIR = os.path.join(os.path.dirname(__file__), 'public', 'gallery')
@@ -62,13 +62,13 @@ INDEX_FILENAME = 'index.json'
 MOTION_BOX_PADDING = 12
 MOTION_MAX_BOXES = 5
 # Motion detection tuning
-MOG2_HISTORY = 300        # frames of history for MOG2 background model
-MOG2_VAR_THRESHOLD = 40   # variance threshold for foreground classification
-MOG2_LEARNING_RATE = 0.002  # very slow learning so moving fish aren't absorbed
-MIN_CONTOUR_AREA = 800    # minimum contour area to count as motion (in analysis resolution)
+MOG2_HISTORY = 500        # frames of history for MOG2 background model
+MOG2_VAR_THRESHOLD = 30   # variance threshold for foreground classification (highly sensitive but stable)
+BACKGROUND_ADAPTATION_SECONDS = 50.0  # background adapts to gradual lighting changes over this period
+MIN_CONTOUR_AREA = 150    # minimum contour area to count as motion (in 320x240 analysis resolution)
 WARMUP_FRAMES = 40        # frames to let background model stabilize before detecting
 MAX_CONTOUR_ASPECT = 5.0  # reject contours with aspect ratio above this (edge artifacts)
-CONSECUTIVE_FRAMES_REQUIRED = 2  # require motion in N consecutive frames before showing boxes
+CONSECUTIVE_FRAMES_REQUIRED = 3  # require motion in N consecutive frames before showing boxes
 ANALYSIS_RESOLUTION = (320, 240)  # lower resolution for faster, less noisy analysis
 # ==========================================
 
@@ -77,125 +77,180 @@ PAGE = """\
 <head>
 <title>Tank Monitor Camera Stream</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
+:root {
+    --bg-color: #05070d;
+    --card-bg: rgba(13, 17, 30, 0.7);
+    --border-color: rgba(255, 255, 255, 0.08);
+    --text-primary: #f3f4f6;
+    --text-secondary: #9ca3af;
+    --accent-active: #f59e0b; /* Yellow/Amber */
+    --accent-quiet: #10b981; /* Emerald/Green */
+    --accent-inactive: #6b7280; /* Gray */
+    --accent-unavailable: #ef4444; /* Red */
+    --font-sans: 'Plus Jakarta Sans', 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
 body {
-        margin: 0;
-        font-family: Arial, sans-serif;
-        background: #05070d;
-        color: #e5e7eb;
+    margin: 0;
+    font-family: var(--font-sans);
+    background: var(--bg-color);
+    color: var(--text-primary);
+    -webkit-font-smoothing: antialiased;
 }
 .wrap {
-        max-width: 980px;
-        margin: 0 auto;
-        padding: 16px;
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 32px 16px;
 }
 .header {
-        display: flex;
-        justify-content: space-between;
-        gap: 16px;
-        align-items: center;
-        flex-wrap: wrap;
-        margin-bottom: 14px;
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 20px;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 16px;
 }
 .title {
-        margin: 0;
-        font-size: 1.3rem;
+    margin: 0;
+    font-size: 1.6rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    background: linear-gradient(135deg, #ffffff 0%, #cbd5e1 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
 }
 .subtitle {
-        margin: 4px 0 0;
-        color: #9ca3af;
-        font-size: 0.92rem;
+    margin: 6px 0 0;
+    color: var(--text-secondary);
+    font-size: 0.92rem;
+    line-height: 1.5;
 }
 .status-row {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        flex-wrap: wrap;
-        margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
 }
 .pill {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        border-radius: 999px;
-        padding: 8px 12px;
-        font-size: 0.84rem;
-        border: 1px solid rgba(255,255,255,0.12);
-        background: rgba(255,255,255,0.04);
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    border-radius: 999px;
+    padding: 8px 16px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    border: 1px solid var(--border-color);
+    background: rgba(255, 255, 255, 0.03);
+    backdrop-filter: blur(8px);
+    transition: all 0.3s ease;
 }
 .dot {
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-        background: #6b7280;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #6b7280;
+    transition: all 0.3s ease;
 }
-.dot.active { background: #22c55e; }
-.dot.quiet { background: #f59e0b; }
-.dot.inactive { background: #ef4444; }
-.dot.unavailable { background: #9ca3af; }
+.dot.active { background: var(--accent-active); box-shadow: 0 0 8px var(--accent-active); }
+.dot.quiet { background: var(--accent-quiet); box-shadow: 0 0 8px var(--accent-quiet); }
+.dot.inactive { background: var(--accent-inactive); }
+.dot.unavailable { background: var(--accent-unavailable); box-shadow: 0 0 8px var(--accent-unavailable); }
 .note {
-        color: #9ca3af;
-        font-size: 0.82rem;
+    color: var(--text-secondary);
+    font-size: 0.88rem;
+    line-height: 1.4;
 }
 .viewer {
-        position: relative;
-        border-radius: 14px;
-        overflow: hidden;
-        border: 1px solid rgba(255,255,255,0.12);
-        background: #000;
+    position: relative;
+    border-radius: 16px;
+    overflow: hidden;
+    border: 1px solid var(--border-color);
+    background: #000;
+    box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.6);
+    transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.viewer.state-active {
+    border-color: rgba(245, 158, 11, 0.35);
+    box-shadow: 0 0 30px rgba(245, 158, 11, 0.12), 0 20px 40px -15px rgba(0, 0, 0, 0.6);
+}
+.viewer.state-quiet {
+    border-color: rgba(16, 185, 129, 0.3);
+    box-shadow: 0 0 25px rgba(16, 185, 129, 0.08), 0 20px 40px -15px rgba(0, 0, 0, 0.6);
+}
+.viewer.state-inactive {
+    border-color: var(--border-color);
+}
+.viewer.state-unavailable {
+    border-color: rgba(239, 68, 68, 0.3);
+    box-shadow: 0 0 25px rgba(239, 68, 68, 0.08), 0 20px 40px -15px rgba(0, 0, 0, 0.6);
 }
 .viewer img {
-        display: block;
-        width: 100%;
-        height: auto;
+    display: block;
+    width: 100%;
+    height: auto;
 }
 .overlay {
-        position: absolute;
-        left: 12px;
-        right: 12px;
-        bottom: 12px;
-        display: flex;
-        justify-content: space-between;
-        gap: 12px;
-        align-items: flex-end;
-        flex-wrap: wrap;
+    position: absolute;
+    left: 16px;
+    right: 16px;
+    bottom: 16px;
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    align-items: flex-end;
+    flex-wrap: wrap;
 }
 .overlay-card {
-        backdrop-filter: blur(12px);
-        background: rgba(5, 7, 13, 0.7);
-        border: 1px solid rgba(255,255,255,0.12);
-        border-radius: 12px;
-        padding: 10px 12px;
-        max-width: 60%;
+    backdrop-filter: blur(16px) saturate(180%);
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 14px 18px;
+    max-width: 65%;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
 }
 .overlay-status {
-        font-weight: 700;
-        margin-bottom: 4px;
+    font-weight: 700;
+    margin-bottom: 6px;
+    font-size: 1rem;
+    letter-spacing: -0.01em;
 }
 .overlay-small {
-        color: #cbd5e1;
-        font-size: 0.84rem;
-        line-height: 1.35;
+    color: #cbd5e1;
+    font-size: 0.85rem;
+    line-height: 1.4;
 }
 .error-box {
-        display: none;
-        position: absolute;
-        inset: 0;
-        align-items: center;
-        justify-content: center;
-        flex-direction: column;
-        text-align: center;
-        gap: 10px;
-        background: rgba(5, 7, 13, 0.9);
+    display: none;
+    position: absolute;
+    inset: 0;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    text-align: center;
+    gap: 12px;
+    background: rgba(5, 7, 13, 0.92);
 }
 .button {
-        border: 0;
-        border-radius: 10px;
-        padding: 10px 14px;
-        background: #e5e7eb;
-        color: #0f172a;
-        font-weight: 700;
-        cursor: pointer;
+    border: 0;
+    border-radius: 8px;
+    padding: 10px 18px;
+    background: #e5e7eb;
+    color: #0f172a;
+    font-weight: 600;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+.button:hover {
+    background: #ffffff;
+    transform: translateY(-1px);
 }
 </style>
 </head>
@@ -204,14 +259,14 @@ body {
 <div class="header">
     <div>
         <h1 class="title">Tank Monitor Camera Stream</h1>
-        <p class="subtitle">Live video with motion-aware status. Yellow boxes mark moving regions. This reports activity, not a guaranteed fish-identification result.</p>
+        <p class="subtitle">Live video with motion-aware status. Bounding boxes track active moving regions with stable IDs. This reports activity, not a guaranteed fish-identification result.</p>
     </div>
     <div class="pill" id="connectionPill"><span class="dot unavailable" id="statusDot"></span><span id="statusPillText">Checking view...</span></div>
 </div>
 <div class="status-row">
     <div class="note" id="statusLine">Waiting for the first frame.</div>
 </div>
-<div class="viewer">
+<div class="viewer state-unknown">
     <img id="cameraFrame" src="stream" alt="Live aquarium feed" />
     <div class="overlay">
         <div class="overlay-card">
@@ -222,9 +277,9 @@ body {
     </div>
     <div class="error-box" id="cameraOffline">
         <div style="font-size: 2rem;">📹</div>
-        <div style="font-weight: 700;">Camera stream unavailable</div>
-        <div class="note">Check the camera service and try reconnecting.</div>
-        <button class="button" onclick="retryStream()">Retry</button>
+        <div style="font-weight: 700; font-size: 1.1rem;">Camera stream unavailable</div>
+        <div class="note" style="margin-top: 4px;">Check the camera service and try reconnecting.</div>
+        <button class="button" style="margin-top: 8px;" onclick="retryStream()">Retry</button>
     </div>
 </div>
 </div>
@@ -241,6 +296,7 @@ function setIndicator(state, title, detail) {
     const overlayStatus = document.getElementById('overlayStatus');
     const overlayDetail = document.getElementById('overlayDetail');
     const statusLine = document.getElementById('statusLine');
+    const viewer = document.querySelector('.viewer');
 
     const normalized = state || 'unavailable';
     dot.className = 'dot ' + normalized;
@@ -250,6 +306,9 @@ function setIndicator(state, title, detail) {
     overlayStatus.textContent = title;
     overlayDetail.textContent = detail;
     statusLine.textContent = detail;
+    
+    // Update viewer state class for glow effect
+    viewer.className = 'viewer state-' + normalized;
 }
 
 function renderStatus(payload) {
@@ -322,6 +381,35 @@ pollTimer = setInterval(pollStatus, 4000);
 """
 
 
+def get_iou(box1, box2):
+    """Calculate the Intersection over Union (IoU) of two bounding boxes."""
+    x1, y1, w1, h1 = box1
+    x2, y2, w2, h2 = box2
+    
+    xi1 = max(x1, x2)
+    yi1 = max(y1, y2)
+    xi2 = min(x1 + w1, x2 + w2)
+    yi2 = min(y1 + h1, y2 + h2)
+    
+    inter_w = max(0, xi2 - xi1)
+    inter_h = max(0, yi2 - yi1)
+    inter_area = inter_w * inter_h
+    
+    union_area = (w1 * h1) + (w2 * h2) - inter_area
+    if union_area == 0:
+        return 0.0
+    return float(inter_area) / float(union_area)
+
+
+class TrackedObject:
+    """Represents a tracked motion region with unique persistent ID and coordinates smoothing."""
+    def __init__(self, obj_id, box):
+        self.id = obj_id
+        self.box = box  # (x, y, w, h) in analysis resolution
+        self.active_count = 1
+        self.missed_count = 0
+
+
 class MotionMonitor:
     """Motion detector using OpenCV MOG2 background subtractor on raw frames.
 
@@ -344,15 +432,16 @@ class MotionMonitor:
         self.warmup_count = 0     # frames processed during warmup
         self.last_motion_time = time.time()
         self.motion_score = 0.0
-        self.motion_boxes = []    # boxes in MAIN stream coordinates
         self.state = 'unknown'
         self.last_update = time.time()
-        # Temporal consistency: require consecutive detections
-        self.consecutive_detections = 0
-        self.pending_boxes = []   # candidate boxes awaiting confirmation
-        # Coordinate scaling (set when analysis resolution differs from stream)
+        
+        # Coordinate scaling (set dynamically in update_raw)
         self.scale_x = 1.0
         self.scale_y = 1.0
+
+        # Object Tracking fields
+        self.tracked_objects = []  # List of TrackedObject
+        self.next_object_id = 1
 
     def _init_mog2(self):
         """Initialize the MOG2 background subtractor."""
@@ -371,12 +460,11 @@ class MotionMonitor:
         Args:
             frame: numpy array from camera (raw, no JPEG encoding).
             main_size: (width, height) of the main stream for coordinate scaling.
-                       If None, no scaling is applied.
+                       If None, the input frame resolution is used.
         """
         if not CV2_AVAILABLE or not NUMPY_AVAILABLE:
             with self.lock:
                 self.state = 'unavailable'
-                self.motion_boxes = []
             return
 
         now = time.time()
@@ -399,13 +487,25 @@ class MotionMonitor:
         else:
             return
 
-        gray = cv2.GaussianBlur(gray, (21, 21), 0)
+        input_h, input_w = gray.shape[:2]
+
+        # Resize to ANALYSIS_RESOLUTION for consistent processing speed and parameter tuning
+        if (input_w, input_h) != ANALYSIS_RESOLUTION:
+            gray_analysis = cv2.resize(gray, ANALYSIS_RESOLUTION, interpolation=cv2.INTER_AREA)
+        else:
+            gray_analysis = gray
+
+        # Standard Gaussian blur size to filter high frequency sensor noise while keeping fish shape
+        gray_analysis = cv2.GaussianBlur(gray_analysis, (7, 7), 0)
 
         with self.lock:
-            # Compute coordinate scaling from analysis resolution to main stream
+            # Compute coordinate scaling from analysis resolution to main stream/drawing resolution
             if main_size is not None:
-                self.scale_x = main_size[0] / gray.shape[1]
-                self.scale_y = main_size[1] / gray.shape[0]
+                self.scale_x = main_size[0] / ANALYSIS_RESOLUTION[0]
+                self.scale_y = main_size[1] / ANALYSIS_RESOLUTION[1]
+            else:
+                self.scale_x = input_w / ANALYSIS_RESOLUTION[0]
+                self.scale_y = input_h / ANALYSIS_RESOLUTION[1]
 
             # Initialize MOG2 on first frame
             if self.mog2 is None:
@@ -414,31 +514,30 @@ class MotionMonitor:
             # --- Warmup phase: train the background model without detecting ---
             if self.warmup_count < WARMUP_FRAMES:
                 # Fast learning rate during warmup to converge quickly
-                self.mog2.apply(gray, learningRate=0.15)
+                self.mog2.apply(gray_analysis, learningRate=0.15)
                 self.warmup_count += 1
                 self.last_update = now
                 self.state = 'unknown'
-                self.motion_boxes = []
+                self.tracked_objects = []
                 return
 
-            # --- Detection phase: MOG2 background subtraction ---
-            # Use a very slow learning rate so moving fish are NOT absorbed
-            # into the background model. The model only adapts to gradual
-            # lighting changes over many seconds.
-            fg_mask = self.mog2.apply(gray, learningRate=0.0)  # no learning during detection
+            # --- Detection & Learning phase: MOG2 background subtraction ---
+            # Calculate dynamic learning rate based on physical time constant
+            learning_rate = float(MOTION_CHECK_INTERVAL) / float(BACKGROUND_ADAPTATION_SECONDS)
+            fg_mask = self.mog2.apply(gray_analysis, learningRate=learning_rate)
 
-            # Clean up the foreground mask
-            # Elliptical kernel handles natural shapes better than rectangular
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+            # Clean up the foreground mask (thresholding and morph)
+            _, fg_mask = cv2.threshold(fg_mask, 250, 255, cv2.THRESH_BINARY)
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
             fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, kernel)
             fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, kernel)
-            fg_mask = cv2.dilate(fg_mask, None, iterations=2)
+            fg_mask = cv2.dilate(fg_mask, None, iterations=1)
 
             contours = cv2.findContours(fg_mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             contours = contours[0] if len(contours) == 2 else contours[1]
 
             # Filter contours by area and aspect ratio
-            analysis_area = gray.shape[0] * gray.shape[1]
+            analysis_area = gray_analysis.shape[0] * gray_analysis.shape[1]
             max_contour_area = analysis_area * 0.40
 
             raw_boxes = []
@@ -451,48 +550,80 @@ class MotionMonitor:
                 aspect = max(w, h) / max(min(w, h), 1)
                 if aspect > MAX_CONTOUR_ASPECT:
                     continue
-                # Scale coordinates to main stream resolution and add padding
-                sx = int(x * self.scale_x)
-                sy = int(y * self.scale_y)
-                sw = int(w * self.scale_x)
-                sh = int(h * self.scale_y)
-                sx = max(0, sx - MOTION_BOX_PADDING)
-                sy = max(0, sy - MOTION_BOX_PADDING)
-                sw = sw + (MOTION_BOX_PADDING * 2)
-                sh = sh + (MOTION_BOX_PADDING * 2)
-                raw_boxes.append((sx, sy, sw, sh))
+                raw_boxes.append((x, y, w, h))
 
+            # Limit to the max number of boxes to avoid cluttering
             raw_boxes.sort(key=lambda b: b[2] * b[3], reverse=True)
             raw_boxes = raw_boxes[:MOTION_MAX_BOXES]
 
             motion_score = float(cv2.countNonZero(fg_mask))
-            has_candidates = len(raw_boxes) > 0
 
-            # --- Temporal consistency: require consecutive detections ---
-            # This eliminates transient false positives from noise spikes,
-            # autofocus adjustments, or momentary reflections.
-            if has_candidates:
-                self.consecutive_detections += 1
-                self.pending_boxes = raw_boxes
-            else:
-                self.consecutive_detections = 0
-                self.pending_boxes = []
+            # --- Object Tracking & Matching ---
+            updated_tracked_objects = []
+            matched_indices = set()
+            
+            for obj in self.tracked_objects:
+                best_match_idx = -1
+                best_match_score = -1.0
+                
+                for idx, det_box in enumerate(raw_boxes):
+                    if idx in matched_indices:
+                        continue
+                    
+                    iou = get_iou(obj.box, det_box)
+                    
+                    cx_obj = obj.box[0] + obj.box[2] / 2.0
+                    cy_obj = obj.box[1] + obj.box[3] / 2.0
+                    cx_det = det_box[0] + det_box[2] / 2.0
+                    cy_det = det_box[1] + det_box[3] / 2.0
+                    dist = ((cx_obj - cx_det)**2 + (cy_obj - cy_det)**2)**0.5
+                    
+                    # Match criteria: IoU > 0.1 OR center distance is small (e.g. < 45 pixels in 320x240 resolution)
+                    is_match = (iou > 0.1) or (dist < 45.0)
+                    
+                    if is_match:
+                        # Combine IoU and center distance similarity (closer center distance has higher similarity)
+                        dist_similarity = 1.0 / (1.0 + dist)
+                        score = iou * 2.0 + dist_similarity
+                        if score > best_match_score:
+                            best_match_score = score
+                            best_match_idx = idx
+                            
+                if best_match_idx != -1:
+                    matched_indices.add(best_match_idx)
+                    det_box = raw_boxes[best_match_idx]
+                    
+                    # Coordinates smoothing using Exponential Moving Average (EMA)
+                    alpha = 0.35
+                    x = int(alpha * det_box[0] + (1.0 - alpha) * obj.box[0])
+                    y = int(alpha * det_box[1] + (1.0 - alpha) * obj.box[1])
+                    w = int(alpha * det_box[2] + (1.0 - alpha) * obj.box[2])
+                    h = int(alpha * det_box[3] + (1.0 - alpha) * obj.box[3])
+                    
+                    obj.box = (x, y, w, h)
+                    obj.active_count += 1
+                    obj.missed_count = 0
+                    updated_tracked_objects.append(obj)
+                else:
+                    obj.missed_count += 1
+                    if obj.missed_count <= 5:  # keep tracking for up to 5 frames
+                        updated_tracked_objects.append(obj)
+                        
+            # Start tracking any unmatched detections
+            for idx, det_box in enumerate(raw_boxes):
+                if idx not in matched_indices:
+                    new_obj = TrackedObject(self.next_object_id, det_box)
+                    self.next_object_id += 1
+                    updated_tracked_objects.append(new_obj)
+                    
+            self.tracked_objects = updated_tracked_objects
 
-            if self.consecutive_detections >= CONSECUTIVE_FRAMES_REQUIRED:
-                self.motion_boxes = self.pending_boxes
-                has_motion = True
-            else:
-                self.motion_boxes = []
-                has_motion = False
+            # Identify if there is active motion (objects that are confirmed and not currently missed)
+            confirmed_objects = [obj for obj in self.tracked_objects if obj.active_count >= CONSECUTIVE_FRAMES_REQUIRED and obj.missed_count <= 1]
+            has_motion = len(confirmed_objects) > 0
 
             self.motion_score = motion_score
             self.last_update = time.time()
-
-            # --- Background update: ONLY when no motion is detected ---
-            # When the scene is still, let MOG2 slowly adapt to lighting changes.
-            # During motion, freeze the background so the moving object isn't absorbed.
-            if not has_motion:
-                self.mog2.apply(gray, learningRate=MOG2_LEARNING_RATE)
 
             if has_motion:
                 self.last_motion_time = time.time()
@@ -507,7 +638,6 @@ class MotionMonitor:
         if not CV2_AVAILABLE or not NUMPY_AVAILABLE:
             with self.lock:
                 self.state = 'unavailable'
-                self.motion_boxes = []
             return
         try:
             frame = cv2.imdecode(np.frombuffer(frame_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
@@ -519,17 +649,32 @@ class MotionMonitor:
     def snapshot(self):
         with self.lock:
             now = time.time()
+            confirmed_count = sum(1 for obj in self.tracked_objects if obj.active_count >= CONSECUTIVE_FRAMES_REQUIRED and obj.missed_count <= 1)
             return {
                 'state': self.state,
                 'motionScore': round(self.motion_score, 2),
-                'motionBoxCount': len(self.motion_boxes),
+                'motionBoxCount': confirmed_count,
                 'secondsSinceMotion': round(now - self.last_motion_time, 1),
                 'lastUpdateSecondsAgo': round(now - self.last_update, 1),
             }
 
     def get_boxes(self):
         with self.lock:
-            return list(self.motion_boxes)
+            scaled_boxes = []
+            for obj in self.tracked_objects:
+                # Only show objects that are confirmed and not lost/missed for too long
+                if obj.active_count >= CONSECUTIVE_FRAMES_REQUIRED and obj.missed_count <= 1:
+                    x, y, w, h = obj.box
+                    sx = int(x * self.scale_x)
+                    sy = int(y * self.scale_y)
+                    sw = int(w * self.scale_x)
+                    sh = int(h * self.scale_y)
+                    sx = max(0, sx - MOTION_BOX_PADDING)
+                    sy = max(0, sy - MOTION_BOX_PADDING)
+                    sw = sw + (MOTION_BOX_PADDING * 2)
+                    sh = sh + (MOTION_BOX_PADDING * 2)
+                    scaled_boxes.append((obj.id, (sx, sy, sw, sh)))
+            return scaled_boxes
 
     def draw_overlay(self, frame):
         if not CV2_AVAILABLE:
@@ -540,10 +685,10 @@ class MotionMonitor:
             return frame
 
         annotated = frame.copy()
-        for x, y, w, h in boxes:
+        for obj_id, (x, y, w, h) in boxes:
             cv2.rectangle(annotated, (x, y), (x + w, y + h), (0, 255, 255), 2)
-            cv2.putText(annotated, 'movement', (x, max(18, y - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
-        cv2.putText(annotated, 'motion boxes shown', (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            cv2.putText(annotated, f'ID {obj_id}', (x + 4, max(18, y - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+        cv2.putText(annotated, f'Motion: {len(boxes)} active tracks', (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
         return annotated
 
 
