@@ -61,10 +61,12 @@ MAX_SNAPSHOTS = 20
 INDEX_FILENAME = 'index.json'
 MOTION_BOX_PADDING = 12
 MOTION_MAX_BOXES = 5
-# Improved sensitivity settings
-BACKGROUND_ALPHA = 0.05   # running average update speed (higher = faster adapt to noise/light)
-MOTION_THRESHOLD = 25     # pixel diff threshold (higher = ignore light shimmers)
-MIN_CONTOUR_AREA = 1000    # minimum size of motion (higher = ignore tiny particles/currents)
+# Motion detection tuning
+BACKGROUND_ALPHA = 0.005  # background learning rate (very slow so fish aren't absorbed)
+MOTION_THRESHOLD = 40     # pixel diff threshold (high enough to reject JPEG compression noise)
+MIN_CONTOUR_AREA = 1500   # minimum contour area to count as motion
+WARMUP_FRAMES = 30        # frames to let background model stabilize before detecting
+MAX_CONTOUR_ASPECT = 5.0  # reject contours with aspect ratio above this (edge artifacts)
 # ==========================================
 
 PAGE = """\
@@ -320,8 +322,8 @@ pollTimer = setInterval(pollStatus, 4000);
 class MotionMonitor:
     def __init__(self):
         self.lock = Lock()
-        self.prev_gray = None
-        self.bg = None  # background model (float)
+        self.bg = None            # background model (float32 grayscale)
+        self.warmup_count = 0     # frames processed so far during warmup
         self.last_motion_time = time.time()
         self.motion_score = 0.0
         self.motion_boxes = []
@@ -337,7 +339,7 @@ class MotionMonitor:
 
         now = time.time()
         with self.lock:
-            if now - self.last_update < MOTION_CHECK_INTERVAL and self.prev_gray is not None:
+            if now - self.last_update < MOTION_CHECK_INTERVAL and self.bg is not None:
                 return
 
         frame = cv2.imdecode(np.frombuffer(frame_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
@@ -347,35 +349,47 @@ class MotionMonitor:
         gray = cv2.GaussianBlur(gray, (21, 21), 0)
 
         with self.lock:
-            # initialize background model if needed
+            # --- Warmup phase: build a stable background before detecting ---
             if self.bg is None:
                 self.bg = gray.astype('float32')
+                self.warmup_count = 1
                 self.last_update = now
                 self.state = 'unknown'
                 self.motion_boxes = []
-                self.prev_gray = gray
                 return
 
-            # compute difference to background model (captures slow movement)
+            if self.warmup_count < WARMUP_FRAMES:
+                # Fast blend during warmup to converge the background quickly
+                cv2.accumulateWeighted(gray, self.bg, 0.5)
+                self.warmup_count += 1
+                self.last_update = now
+                self.state = 'unknown'
+                self.motion_boxes = []
+                return
+
+            # --- Detection phase: background subtraction only ---
+            # Compare current frame against the stable background model.
+            # We intentionally do NOT use frame-to-frame diff because with
+            # JPEG-compressed input the re-encoding artifacts produce random
+            # pixel differences that look like motion.
             bg_frame = cv2.convertScaleAbs(self.bg)
             delta = cv2.absdiff(bg_frame, gray)
-            # also compute short-term diff (prev frame) to catch quick motion
-            short_delta = cv2.absdiff(self.prev_gray, gray)
-            # combine deltas to be sensitive to both slow and quick motion
-            combined = cv2.max(delta, short_delta)
-            # threshold and morph
-            thresh = cv2.threshold(combined, MOTION_THRESHOLD, 255, cv2.THRESH_BINARY)[1]
-            # Perform morphological opening to remove high-frequency noise (e.g. water shimmer, floating particles)
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+
+            # Threshold: set high enough (40) to reject JPEG quantization noise
+            thresh = cv2.threshold(delta, MOTION_THRESHOLD, 255, cv2.THRESH_BINARY)[1]
+
+            # Morphological opening with a 9x9 kernel to suppress JPEG 8x8
+            # block-boundary artifacts and small water shimmer noise
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
             thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
-            # Dilate to merge adjacent moving sections
+            # Dilate to merge nearby regions into coherent contours
             thresh = cv2.dilate(thresh, None, iterations=2)
 
             contours = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             contours = contours[0] if len(contours) == 2 else contours[1]
 
-            # Limit the maximum area of a single contour to 40% of the screen
-            # to filter out full-screen lighting/autofocus adjustments
+            # Reject contours that are too small, too large (lighting change),
+            # or have an extreme aspect ratio (edge/line artifacts)
             frame_area = frame.shape[0] * frame.shape[1]
             max_contour_area = frame_area * 0.40
 
@@ -385,6 +399,10 @@ class MotionMonitor:
                 if area < MIN_CONTOUR_AREA or area > max_contour_area:
                     continue
                 x, y, w, h = cv2.boundingRect(contour)
+                # Aspect ratio filter: reject very elongated artifacts
+                aspect = max(w, h) / max(min(w, h), 1)
+                if aspect > MAX_CONTOUR_ASPECT:
+                    continue
                 x = max(0, x - MOTION_BOX_PADDING)
                 y = max(0, y - MOTION_BOX_PADDING)
                 w = min(frame.shape[1] - x, w + (MOTION_BOX_PADDING * 2))
@@ -395,15 +413,20 @@ class MotionMonitor:
             boxes = boxes[:MOTION_MAX_BOXES]
 
             motion_score = float(cv2.countNonZero(thresh))
+            has_motion = len(boxes) > 0
+
             self.motion_score = motion_score
             self.motion_boxes = boxes
-            self.prev_gray = gray
             self.last_update = time.time()
 
-            # update background slowly so slow motion isn't absorbed too fast
-            cv2.accumulateWeighted(gray, self.bg, BACKGROUND_ALPHA)
+            # --- Background update: ONLY when no motion is detected ---
+            # This is critical: if we update the background during motion,
+            # the moving object gets absorbed and we get ghost detections
+            # at its old position instead of tracking the actual movement.
+            if not has_motion:
+                cv2.accumulateWeighted(gray, self.bg, BACKGROUND_ALPHA)
 
-            if motion_score >= MIN_CONTOUR_AREA:
+            if has_motion:
                 self.last_motion_time = time.time()
                 self.state = 'active'
             elif (time.time() - self.last_motion_time) >= MOTION_STILL_SECONDS:
