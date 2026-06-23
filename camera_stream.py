@@ -10,6 +10,9 @@ import mimetypes
 from http import server
 from threading import Condition, Lock, Thread
 
+# Suppress libcamera warning logs (e.g., "PDAF data in unsupported format" warnings)
+os.environ["LIBCAMERA_LOG_LEVELS"] = "ERROR"
+
 try:
     from picamera2 import Picamera2
     from picamera2.encoders import MJPEGEncoder
@@ -362,14 +365,24 @@ class MotionMonitor:
             combined = cv2.max(delta, short_delta)
             # threshold and morph
             thresh = cv2.threshold(combined, MOTION_THRESHOLD, 255, cv2.THRESH_BINARY)[1]
+            # Perform morphological opening to remove high-frequency noise (e.g. water shimmer, floating particles)
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+            thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+            # Dilate to merge adjacent moving sections
             thresh = cv2.dilate(thresh, None, iterations=2)
 
             contours = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             contours = contours[0] if len(contours) == 2 else contours[1]
 
+            # Limit the maximum area of a single contour to 40% of the screen
+            # to filter out full-screen lighting/autofocus adjustments
+            frame_area = frame.shape[0] * frame.shape[1]
+            max_contour_area = frame_area * 0.40
+
             boxes = []
             for contour in contours:
-                if cv2.contourArea(contour) < MIN_CONTOUR_AREA:
+                area = cv2.contourArea(contour)
+                if area < MIN_CONTOUR_AREA or area > max_contour_area:
                     continue
                 x, y, w, h = cv2.boundingRect(contour)
                 x = max(0, x - MOTION_BOX_PADDING)
@@ -716,10 +729,10 @@ if PICAMERA2_AVAILABLE:
         # Start the camera so properties are loaded and controls can be set
         picam2.start()
 
-        # Set the framerate to 24 FPS for smoother video
+        # Set the framerate to 30 FPS for smoother video
         try:
-            picam2.set_controls({"FrameRate": 24})
-            print("Camera framerate set to 24 FPS.")
+            picam2.set_controls({"FrameRate": 30})
+            print("Camera framerate set to 30 FPS.")
         except Exception as e:
             logging.warning('Failed to set FrameRate control: %s', e)
 
