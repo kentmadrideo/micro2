@@ -7,7 +7,7 @@
 // ==========================================
 // NETWORK CONFIGURATION
 // ==========================================
-const char* ssid = "namespace_____";
+const char* ssid = "name_____";
 const char* password = "erikahahaha";
 const char* mqtt_server = "10.154.116.26";
 WiFiClient espClient;

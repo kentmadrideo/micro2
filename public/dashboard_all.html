@@ -1063,7 +1063,7 @@
             <div class="mode-badge manual" id="cameraModeState">WARMING</div>
           </div>
           <div class="camera-feed-frame">
-            <img id="cameraFeed" src="http://192.168.1.10:8000/stream" alt="Live camera stream" onload="handleCameraLive()" onerror="handleCameraError()" />
+            <img id="cameraFeed" src="" alt="Live camera stream" onload="handleCameraLive()" onerror="handleCameraError()" />
             <div id="cameraOffline" class="camera-offline">
               <span style="font-size:2rem;">📹</span>
               <div>
@@ -1075,7 +1075,17 @@
           </div>
         </div>
         <div class="card-controls">
-          <div class="camera-actions"><button class="ctrl-btn" id="btnPauseCamera" onclick="toggleCameraPlay(true)">Pause</button><button class="ctrl-btn active-on" id="btnPlayCamera" onclick="toggleCameraPlay(false)">Play</button><button class="ctrl-btn" onclick="takeSnapshot()">Snapshot</button></div>
+          <div class="camera-actions">
+            <button class="ctrl-btn" id="btnPauseCamera" onclick="toggleCameraPlay(true)">Pause</button>
+            <button class="ctrl-btn active-on" id="btnPlayCamera" onclick="toggleCameraPlay(false)">Play</button>
+            <button class="ctrl-btn" onclick="takeSnapshot()">Snapshot</button>
+            <button class="ctrl-btn" id="btnCameraSettings" onclick="toggleCameraSettings()">Settings</button>
+          </div>
+          <div id="cameraSettingsPanel" style="display:none; margin-top:12px; padding-top:12px; border-top:1px solid var(--border-glass); align-items:center; gap:8px;">
+            <span style="font-size:0.75rem; color:var(--text-muted);">Camera IP/Host:</span>
+            <input type="text" id="cameraIpInput" placeholder="e.g. 192.168.1.10 or localhost" style="background:rgba(255,255,255,0.05); border:1px solid var(--border-glass); border-radius:6px; color:var(--text-primary); padding:4px 8px; font-size:0.75rem; flex:1;" />
+            <button class="ctrl-btn" onclick="saveCameraSettings()" style="padding:4px 10px; font-size:0.75rem; width:auto;">Save</button>
+          </div>
         </div>
       </div>
 
@@ -1439,10 +1449,45 @@
       if (cameraBadge) { cameraBadge.textContent = 'LIVE'; cameraBadge.className = 'mode-badge auto'; }
     }
 
+    function getCameraHost() {
+      const savedIp = localStorage.getItem('camera_ip');
+      if (savedIp) {
+        return `http://${savedIp}:8000`;
+      }
+      if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+        return 'http://192.168.1.10:8000';
+      }
+      return `http://${window.location.hostname}:8000`;
+    }
+
+    function toggleCameraSettings() {
+      const panel = document.getElementById('cameraSettingsPanel');
+      const input = document.getElementById('cameraIpInput');
+      if (!panel || !input) return;
+      if (panel.style.display === 'none') {
+        panel.style.display = 'flex';
+        const savedIp = localStorage.getItem('camera_ip') || (window.location.hostname === 'localhost' ? '192.168.1.10' : window.location.hostname);
+        input.value = savedIp;
+      } else {
+        panel.style.display = 'none';
+      }
+    }
+
+    function saveCameraSettings() {
+      const input = document.getElementById('cameraIpInput');
+      if (!input) return;
+      const ip = input.value.trim();
+      if (ip) {
+        localStorage.setItem('camera_ip', ip);
+        document.getElementById('cameraSettingsPanel').style.display = 'none';
+        retryCamera();
+      }
+    }
+
     function retryCamera() {
       const feed = document.getElementById('cameraFeed');
       const offline = document.getElementById('cameraOffline');
-      if (feed) feed.src = 'http://192.168.1.10:8000/stream?t=' + Date.now();
+      if (feed) feed.src = getCameraHost() + '/stream?t=' + Date.now();
       if (feed) feed.style.display = 'block';
       if (offline) offline.style.display = 'none';
       handleCameraLive();
@@ -1651,7 +1696,7 @@
 
     async function pollCameraActivity() {
       try {
-        const response = await fetch('http://192.168.1.10:8000/status?t=' + Date.now(), { cache: 'no-store' });
+        const response = await fetch(getCameraHost() + '/status?t=' + Date.now(), { cache: 'no-store' });
         if (!response.ok) throw new Error(response.status);
         const status = await response.json();
         updateCameraActivity(status);
@@ -1697,6 +1742,8 @@
 
     window.addEventListener('resize', drawTrendChart);
 
+    const feedEl = document.getElementById('cameraFeed');
+    if (feedEl) feedEl.src = getCameraHost() + '/stream';
     connectWebSocket();
     handleCameraLive();
     pollCameraActivity();
