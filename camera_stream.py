@@ -332,6 +332,11 @@ class MotionMonitor:
                 self.motion_boxes = []
             return
 
+        now = time.time()
+        with self.lock:
+            if now - self.last_update < MOTION_CHECK_INTERVAL and self.prev_gray is not None:
+                return
+
         frame = cv2.imdecode(np.frombuffer(frame_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
         if frame is None:
             return
@@ -342,7 +347,7 @@ class MotionMonitor:
             # initialize background model if needed
             if self.bg is None:
                 self.bg = gray.astype('float32')
-                self.last_update = time.time()
+                self.last_update = now
                 self.state = 'unknown'
                 self.motion_boxes = []
                 self.prev_gray = gray
@@ -559,13 +564,6 @@ if PICAMERA2_AVAILABLE:
         def write(self, buf):
             MOTION_MONITOR.update(buf)
             with self.condition:
-                if CV2_AVAILABLE and NUMPY_AVAILABLE:
-                    frame = cv2.imdecode(np.frombuffer(buf, dtype=np.uint8), cv2.IMREAD_COLOR)
-                    if frame is not None:
-                        frame = MOTION_MONITOR.draw_overlay(frame)
-                        ok, encoded = cv2.imencode('.jpg', frame)
-                        if ok:
-                            buf = encoded.tobytes()
                 self.frame = buf
                 self.condition.notify_all()
 
@@ -671,7 +669,18 @@ if PICAMERA2_AVAILABLE:
                     while True:
                         with output.condition:
                             output.condition.wait()
-                            frame = output.frame
+                            raw_frame = output.frame
+                        frame = raw_frame
+                        if CV2_AVAILABLE and NUMPY_AVAILABLE:
+                            try:
+                                img = cv2.imdecode(np.frombuffer(raw_frame, dtype=np.uint8), cv2.IMREAD_COLOR)
+                                if img is not None:
+                                    img = MOTION_MONITOR.draw_overlay(img)
+                                    ok, encoded = cv2.imencode('.jpg', img)
+                                    if ok:
+                                        frame = encoded.tobytes()
+                            except Exception:
+                                pass
                         self.wfile.write(b'--FRAME\r\n')
                         self.send_header('Content-Type', 'image/jpeg')
                         self.send_header('Content-Length', len(frame))
@@ -706,6 +715,13 @@ if PICAMERA2_AVAILABLE:
         
         # Start the camera so properties are loaded and controls can be set
         picam2.start()
+
+        # Set the framerate to 15 FPS for lower CPU usage and smooth video
+        try:
+            picam2.set_controls({"FrameRate": 15})
+            print("Camera framerate set to 15 FPS.")
+        except Exception as e:
+            logging.warning('Failed to set FrameRate control: %s', e)
 
         # Keep the crop close to the full sensor area so the view is slightly wider.
         # This uses the full sensor area, which is the widest software view available.
