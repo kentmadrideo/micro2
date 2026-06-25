@@ -1087,7 +1087,7 @@
       return `http://${savedIp}:8000`;
     }
     if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-      return 'http://192.168.1.10:8000';
+      return 'http://localhost:8000';
     }
     return `http://${window.location.hostname}:8000`;
   }
@@ -1098,7 +1098,7 @@
     if (!panel || !input) return;
     if (panel.style.display === 'none') {
       panel.style.display = 'flex';
-      const savedIp = localStorage.getItem('camera_ip') || (window.location.hostname === 'localhost' ? '192.168.1.10' : window.location.hostname);
+      const savedIp = localStorage.getItem('camera_ip') || (window.location.hostname === 'localhost' ? 'localhost' : window.location.hostname);
       input.value = savedIp;
     } else {
       panel.style.display = 'none';
