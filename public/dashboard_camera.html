@@ -1082,14 +1082,17 @@
   }
 
   function getCameraHost() {
-    const savedIp = localStorage.getItem('camera_ip');
+    const savedIp = (localStorage.getItem('camera_ip') || '').trim();
     if (savedIp) {
-      return `http://${savedIp}:8000`;
+      if (/^https?:\/\//i.test(savedIp)) {
+        return savedIp;
+      }
+      if (savedIp.includes(':')) {
+        return `http://${savedIp}`;
+      }
+      return `http://${savedIp}:${window.location.port || 3000}`;
     }
-    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-      return 'http://localhost:8000';
-    }
-    return `http://${window.location.hostname}:8000`;
+    return window.location.origin;
   }
 
   function toggleCameraSettings() {
@@ -1098,7 +1101,7 @@
     if (!panel || !input) return;
     if (panel.style.display === 'none') {
       panel.style.display = 'flex';
-      const savedIp = localStorage.getItem('camera_ip') || (window.location.hostname === 'localhost' ? 'localhost' : window.location.hostname);
+      const savedIp = localStorage.getItem('camera_ip') || window.location.host;
       input.value = savedIp;
     } else {
       panel.style.display = 'none';

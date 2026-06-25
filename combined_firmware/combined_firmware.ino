@@ -40,7 +40,7 @@ const int TOF_THRESHOLD_MM = 50;     // VL53L0X: distance threshold (less than 5
 const int STEP_DELAY_US = 900;       // Stepper speed (lower = faster)
 const float phCalibrationValue = 23.34;
 // GSM / alerting
-const char* ALERT_PHONE_NUMBER = "+639067565903"; // <- CHANGE to destination number
+const char* ALERT_PHONE_NUMBER = "+639122196781"; // <- CHANGE to destination number
 bool lowPhAlertSent = false;
 bool highPhAlertSent = false;
 
