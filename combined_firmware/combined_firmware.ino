@@ -9,7 +9,7 @@
 // ==========================================
 const char* ssid = "name_____";
 const char* password = "erikahahaha";
-const char* mqtt_server = "10.208.14.26";
+const char* mqtt_server = "10.230.237.26";
 WiFiClient espClient;
 PubSubClient client(espClient);
 // ==========================================
@@ -37,6 +37,7 @@ const int thresholdADC = 1600;       // Turbidity: below = cloudy
 const float lightThreshold = 2.0;    // BH1750: below = dark (lux)
 const boolean isActiveLowRelay = true;
 const int TOF_THRESHOLD_MM = 50;     // VL53L0X: distance threshold (less than 50mm)
+const int TOF_ZERO_THRESHOLD_MM = 0; // VL53L0X: distance threshold (0mm)
 const int STEP_DELAY_US = 900;       // Stepper speed (lower = faster)
 const float phCalibrationValue = 23.34;
 // GSM / alerting
@@ -489,13 +490,13 @@ void loop() {
           }
         }
       }
-      // Auto stepper control based on distance (< 50mm triggers cycle, else idle)
+      // Auto stepper control based on distance (< 50mm or 0mm triggers cycle, else idle)
       if (stepperAuto) {
-        if (distance_mm <= TOF_THRESHOLD_MM) {
+        if (distance_mm <= TOF_THRESHOLD_MM || distance_mm == TOF_ZERO_THRESHOLD_MM) {
           if (!tofTriggered) {
             tofTriggered = true;
             startStepperCycle();
-            Serial.println("  [AUTO] <= 50mm -> Triggered Stepper Cycle");
+            Serial.println("  [AUTO] <= 50mm or 0mm -> Triggered Stepper Cycle");
           }
         } else {
           tofTriggered = false; // Reset trigger when out of range

@@ -1079,6 +1079,7 @@
             <button class="ctrl-btn" id="btnPauseCamera" onclick="toggleCameraPlay(true)">Pause</button>
             <button class="ctrl-btn active-on" id="btnPlayCamera" onclick="toggleCameraPlay(false)">Play</button>
             <button class="ctrl-btn" onclick="takeSnapshot()">Snapshot</button>
+            <button class="ctrl-btn" onclick="openGallery()">Gallery</button>
             <button class="ctrl-btn" id="btnCameraSettings" onclick="toggleCameraSettings()">Settings</button>
           </div>
           <div id="cameraSettingsPanel" style="display:none; margin-top:12px; padding-top:12px; border-top:1px solid var(--border-glass); align-items:center; gap:8px;">
@@ -1126,6 +1127,17 @@
     </div>
 
     <div class="dashboard-footer">Tank Monitor System · Overview Dashboard · All sensors plus long-term trend history</div>
+
+    <!-- Gallery Modal -->
+    <div id="galleryModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);align-items:center;justify-content:center;z-index:9999;">
+      <div style="background:#0b1220;padding:18px;border-radius:12px;max-width:1100px;width:92%;max-height:86vh;overflow:auto;border:1px solid rgba(255,255,255,0.06);">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <div style="font-weight:700;color:#e6eef8">Snapshot Gallery</div>
+          <div><button class="ctrl-btn" onclick="closeGallery()">Close</button></div>
+        </div>
+        <div id="galleryGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;"></div>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -1520,6 +1532,30 @@
     function takeSnapshot() {
       const feed = document.getElementById('cameraFeed');
       if (feed && feed.src && feed.style.display !== 'none') window.open(feed.src, '_blank');
+    }
+
+    // Gallery
+    function openGallery() { document.getElementById('galleryModal').style.display = 'flex'; loadGallery(); }
+    function closeGallery() { document.getElementById('galleryModal').style.display = 'none'; }
+
+    async function loadGallery() {
+      const grid = document.getElementById('galleryGrid');
+      grid.innerHTML = '<div style="color:#9ca3af;padding:12px;">Loading...</div>';
+      // try camera server, then dashboard
+      const feed = document.getElementById('cameraFeed');
+      let cameraBase = null;
+      try { if (feed && feed.src) { const url = new URL(feed.src, location.href); cameraBase = url.origin; } } catch(e){ cameraBase = null; }
+      const candidates = []; if (cameraBase) candidates.push(cameraBase + '/gallery/index.json'); candidates.push('/gallery/index.json');
+      let files = null; let usingCamera = false;
+      for (const u of candidates) {
+        try { const res = await fetch(u + '?t=' + Date.now(), { cache: 'no-store' }); if (!res.ok) throw new Error(res.status); files = await res.json(); if (Array.isArray(files)) { usingCamera = u.startsWith(cameraBase || ''); break; } } catch(e) { }
+      }
+      if (!Array.isArray(files) || files.length === 0) { grid.innerHTML = '<div style="color:#9ca3af;padding:12px;">No snapshots yet.</div>'; return; }
+      grid.innerHTML = '';
+      files.slice().reverse().forEach(name => {
+        const wrap = document.createElement('div'); wrap.style.border='1px solid rgba(255,255,255,0.04)'; wrap.style.borderRadius='8px'; wrap.style.overflow='hidden'; wrap.style.background='#05070d';
+        const img = document.createElement('img'); const base = usingCamera && cameraBase ? cameraBase + '/gallery/' : '/gallery/'; img.src = base + encodeURIComponent(name) + '?t=' + Date.now(); img.style.width='100%'; img.style.display='block'; img.style.cursor='pointer'; img.onclick = () => window.open(base + encodeURIComponent(name), '_blank'); wrap.appendChild(img); grid.appendChild(wrap);
+      });
     }
 
     function sampleTrend() {
